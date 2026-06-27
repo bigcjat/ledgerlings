@@ -258,7 +258,7 @@ const OPNUM={feed:FEED,play:PLAY,clean:CLEAN,heal:HEAL};
 document.querySelectorAll('[data-op]').forEach(b=>b.onclick=async ()=>{
   const op=b.dataset.op, before=JSON.stringify(pet);
   if(xamanReady){                                          // REAL: sign a Payment+memo in Xaman; issuer applies the rules + NFTokenModify
-    const r=await XamanBridge.interact(op);
+    const r=await XamanBridge.interact(op,petNid);
     if(r.local){ /* fell back */ } else if(!r.signed){ toast('cancelled'); return; }
     else { const live=petNid && await XamanBridge.fetchPet(petNid); if(live) pet=live; toast(op+' signed! 💖'); lastJoy=performance.now(); return; }
   }
@@ -305,16 +305,26 @@ function dLoop(){ requestAnimationFrame(dLoop); if(!document.getElementById('dan
 dLoop();
 document.getElementById('dance').addEventListener('pointerdown',e=>{if(e.target.dataset.close===undefined)dTap();});
 
-// ── Verify my pet ──
-document.getElementById('verify').onclick=()=>{
+// ── Verify my pet — re-derive the pet from its on-ledger history (real verifier; local demo = trivially fair) ──
+document.getElementById('verify').onclick=async ()=>{
   open('vov');
-  const fair=true; // PROD: replay_verify.verify_pet(nid) over the on-ledger history
-  document.getElementById('vbody').innerHTML=
-    `The rules are open-source and the pet's whole state lives on-chain in a Dynamic NFT.<br><br>`+
+  const intro=`The rules are open-source and the pet's whole state lives on-chain in a Dynamic NFT.<br><br>`+
     `Anyone re-runs the rules over this pet's ledger history and checks it matches the on-ledger state — `+
-    `<b>you don't trust us, you check.</b><br><br>`+
-    `<span class="${fair?'ok':'bad'}">${fair?'✅ VERIFIED — every state change reproduces from the open rules. The game played fair.':'🚨 DIVERGED'}</span>`+
-    `<br><br><span style="opacity:.6">Stats are cosmetic-safe; accessories can never touch the fair state.</span>`;
+    `<b>you don't trust us, you check.</b><br><br>`;
+  const foot=`<br><br><span style="opacity:.6">Stats are cosmetic-safe; accessories can never touch the fair state.</span>`;
+  const V=document.getElementById('vbody');
+  if(!xamanReady||!petNid){ // standalone local demo: no on-ledger pet to replay
+    V.innerHTML=intro+`<span class="ok">✅ LOCAL DEMO — running the open rules in your browser; nothing on-ledger to dispute.</span>`+foot; return;
+  }
+  V.innerHTML=intro+`<span style="opacity:.7">Re-deriving from ledger history…</span>`;
+  const v=await XamanBridge.verify(petNid);
+  const pass=v&&v.verdict==='PASS';
+  const line = pass
+    ? `<span class="ok">✅ VERIFIED — all ${v.interactions} interactions reproduce from the open rules. The game played fair.</span>`
+    : (v&&v.verdict==='DIVERGED'
+        ? `<span class="bad">🚨 DIVERGED — the on-ledger state does NOT match a faithful replay. ${v.reason||''}</span>`
+        : `<span style="opacity:.7">Could not verify right now (${(v&&v.reason)||'no backend'}).</span>`);
+  V.innerHTML=intro+line+foot;
 };
 
 // overlay open/close

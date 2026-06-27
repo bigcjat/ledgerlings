@@ -32,14 +32,16 @@ const XamanBridge = (() => {
   }
 
   /* Create + open a Payment(+op memo) sign request; resolve {signed, uuid, txid} or {local:true}. */
-  async function interact(op) {
+  async function interact(op, nid) {
     if (!ready || !xumm) return { local: true };
+    // memo = "<op>|<nid>" so the on-ledger verifier can attribute this interaction to THIS pet.
+    const memoData = nid ? `${op}|${nid}` : op;
     const payload = await xumm.payload.create({
       txjson: {
         TransactionType: 'Payment',
         Destination: ISSUER,
         Amount: '10',                                // a tiny nudge tx; the memo carries the intent
-        Memos: [{ Memo: { MemoType: hex('ledgerlings/op'), MemoData: hex(op) } }],
+        Memos: [{ Memo: { MemoType: hex('ledgerlings/op'), MemoData: hex(memoData) } }],
       },
       custom_meta: { identifier: 'ledgerlings-' + op, instruction: `Ledgerlings: ${op} your pet` },
     });
@@ -64,11 +66,18 @@ const XamanBridge = (() => {
     if (!BACKEND) return null;
     try { return await (await fetch(`${BACKEND}/pet/${nid}`)).json(); } catch { return null; }
   }
+  /* Verify my pet: the issuer (or anyone) re-derives the pet from its on-ledger history and
+   * compares to the on-chain state. Returns {ok, verdict:'PASS'|'DIVERGED'|..., interactions, reason}. */
+  async function verify(nid) {
+    if (!BACKEND) return { ok: null, verdict: 'NO_BACKEND', reason: 'no issuer backend configured (local demo)' };
+    try { return await (await fetch(`${BACKEND}/verify/${nid}`)).json(); }
+    catch (e) { return { ok: null, verdict: 'ERROR', reason: String(e.message || e) }; }
+  }
   async function adopt() {
     if (!BACKEND || !account) return null;
     try { return await (await fetch(`${BACKEND}/adopt`, { method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ owner: account }) })).json(); } catch { return null; }
   }
 
-  return { init, interact, fetchPet, adopt, get account() { return account; }, get ready() { return ready; } };
+  return { init, interact, fetchPet, adopt, verify, get account() { return account; }, get ready() { return ready; } };
 })();

@@ -48,10 +48,11 @@ app.post('/adopt', async (req, res) => {
   if (!owner) return res.status(400).json({ error: 'owner required' });
   const out = await withClient(async (c, w) => {
     const now = (await c.request({ command: 'ledger', ledger_index: 'validated' })).result.ledger_index;
-    const r = await submit(c, w, { TransactionType: 'NFTokenMint', Account: w.classicAddress,
+    // take the nid from the mint's meta.nftoken_id (robust — last-NFT is wrong once one issuer holds many pets)
+    const prepared = await c.autofill({ TransactionType: 'NFTokenMint', Account: w.classicAddress,
       NFTokenTaxon: TAXON, Flags: TF_MUTABLE_TRANSFERABLE, URI: enc(R.genesis(now, owner)) });
-    const nfts = (await c.request({ command: 'account_nfts', account: w.classicAddress })).result.account_nfts;
-    return { result: r, nid: nfts[nfts.length - 1].NFTokenID };
+    const res = (await c.submitAndWait(w.sign(prepared).tx_blob)).result;
+    return { result: res.meta.TransactionResult, nid: res.meta.nftoken_id, state: R.genesis(now, owner) };
   });
   res.json(out);
 });
@@ -60,6 +61,57 @@ app.post('/adopt', async (req, res) => {
 app.get('/pet/:nid', async (req, res) => {
   const s = await withClient((c, w) => readState(c, w.classicAddress, req.params.nid));
   s ? res.json(s) : res.status(404).json({ error: 'pet not found' });
+});
+
+// replay the OPEN rules from genesis over the pet's on-ledger interaction history
+function replay(genesis, interactions) {
+  let s = genesis;
+  for (const [op, now, sender] of interactions) s = R.step(s, op, now, sender);
+  return s;
+}
+
+// verify a pet: re-derive it from its on-ledger history and compare to the on-chain state.
+// Multi-pet-sound: genesis = the mint whose meta.nftoken_id == nid; interactions = Payments memo'd
+// "<op>|<nid>" for THIS nid (so other pets' interactions are not mixed in). `now` per interaction =
+// the Payment's ledger_index (deterministic — the verifiability fix).
+async function verifyPet(c, issuer, nid) {
+  const current = await readState(c, issuer, nid);
+  if (!current) return { ok: false, verdict: 'NOT_FOUND', reason: 'pet not found at issuer' };
+  let genesis = null; const interactions = [];
+  let marker, scanned = 0;
+  do {
+    const r = await c.request({ command: 'account_tx', account: issuer, limit: 200, forward: true, marker });
+    for (const t of r.result.transactions) {
+      const tx = t.tx || t.tx_json || {};
+      const lseq = tx.ledger_index || t.ledger_index;
+      if (tx.TransactionType === 'NFTokenMint' && tx.URI && t.meta && t.meta.nftoken_id === nid) {
+        try { genesis = dec(tx.URI); } catch { /* not our genesis */ }
+      } else if (tx.TransactionType === 'Payment' && tx.Destination === issuer) {
+        for (const m of (tx.Memos || [])) {
+          const md = m.Memo || {};
+          try {
+            if (unhex(md.MemoType || '') === 'ledgerlings/op') {
+              const [opName, mNid] = unhex(md.MemoData || '').split('|');
+              if (mNid === nid) interactions.push([R.OP[opName] || 0, lseq, tx.Account]);
+            }
+          } catch { /* skip malformed memo */ }
+        }
+      }
+    }
+    marker = r.result.marker; scanned += r.result.transactions.length;
+  } while (marker && scanned < 5000);
+  if (!genesis) return { ok: false, verdict: 'NO_GENESIS', reason: 'no mint URI found for this nid' };
+  interactions.sort((a, b) => a[1] - b[1]);
+  const derived = replay(genesis, interactions);
+  const ok = enc(derived) === enc(current);   // reproduce the exact stored bytes
+  return { ok, verdict: ok ? 'PASS' : 'DIVERGED', nid, interactions: interactions.length,
+    reason: ok ? 'on-ledger state matches a faithful replay of the open rules'
+               : 'on-ledger state does NOT match the open rules — the operator deviated' };
+}
+
+app.get('/verify/:nid', async (req, res) => {
+  try { res.json(await withClient((c, w) => verifyPet(c, w.classicAddress, req.params.nid))); }
+  catch (e) { res.status(500).json({ ok: false, verdict: 'ERROR', reason: e.message }); }
 });
 
 // interact: verify the signed Payment, apply rules, NFTokenModify
@@ -77,7 +129,8 @@ app.post('/interact', async (req, res) => {
     const tx = (await c.request({ command: 'tx', transaction: txid })).result;
     const memo = (tx.Memos || []).map(m => m.Memo).find(m => unhex(m.MemoType || '') === 'ledgerlings/op');
     if (!memo) throw new Error('no op memo');
-    const op = R.OP[unhex(memo.MemoData)] || 0;
+    const [opName] = unhex(memo.MemoData).split('|');   // memo is "<op>|<nid>" (nid present for on-ledger verify)
+    const op = R.OP[opName] || 0;
     const sender = tx.Account, now = tx.ledger_index;
     // 3) apply the open rules, write the new state on-ledger
     const state = await readState(c, w.classicAddress, nid);
@@ -91,7 +144,7 @@ app.post('/interact', async (req, res) => {
 });
 
 // export the issuer primitives so a harness can drive the logic without starting a server.
-module.exports = { app, withClient, readState, submit, enc, dec, hex, unhex, R, TAXON, TF_MUTABLE_TRANSFERABLE, ENDPOINT };
+module.exports = { app, withClient, readState, submit, verifyPet, replay, enc, dec, hex, unhex, R, TAXON, TF_MUTABLE_TRANSFERABLE, ENDPOINT };
 
 if (require.main === module) {
   const PORT = process.env.PORT || 8788;
