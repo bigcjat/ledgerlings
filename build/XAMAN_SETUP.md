@@ -2,7 +2,7 @@
 
 The pieces (built):
 - `app.html` — the xApp frontend. Real Xaman wiring via `xaman_bridge.js` + the unified Xumm SDK
-  (`https://xumm.app/assets/cdn/xumm.min.js`). With no API key it runs the **standalone local demo**.
+  (`https://xaman.app/assets/cdn/xumm.min.js`). With no API key it runs the **standalone local demo**.
 - `xaman_bridge.js` — frontend: resolves the user (xApp OTT), turns each interaction into a real
   `Payment + op-memo` sign request (`xumm.payload.create` → `xumm.xapp.openSignRequest`).
 - `server.js` — the **issuer backend** (only it can `NFTokenModify`): verifies the signed Payment via the

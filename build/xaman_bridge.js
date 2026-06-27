@@ -1,5 +1,5 @@
 /* Ledgerlings <-> Xaman bridge — REAL Xumm SDK wiring with a local-demo fallback.
- * SDK: https://xumm.app/assets/cdn/xumm.min.js   ·   Docs: https://docs.xaman.dev
+ * SDK: https://xaman.app/assets/cdn/xumm.min.js   ·   Docs: https://docs.xaman.dev
  *
  * In a Xaman xApp the SDK auto-resolves the user (OTT context); interactions become real
  * Payment+memo sign requests. With no SDK/key (e.g. opened as a plain web page), interact()
@@ -45,12 +45,16 @@ const XamanBridge = (() => {
     });
     xumm.xapp.openSignRequest(payload);              // open the sign UI inside Xaman
     return await new Promise((res) => {
-      const onResult = async (data) => {
-        if (!data || data.uuid !== payload.uuid) return;
-        const full = await xumm.payload.get(data.uuid);
-        res({ signed: !!full?.meta?.signed, uuid: data.uuid, txid: full?.response?.txid });
+      // openSignRequest resolves via the xApp 'payload' event (NOT xumm.on). One-shot + cleanup.
+      // NOTE: verify the event payload shape against the live xumm SDK during the first xApp test.
+      const onResult = (data) => {
+        const p = data && data.payload;
+        if (!p) return;
+        if (p.uuid && payload.uuid && p.uuid !== payload.uuid) return;   // ignore unrelated payloads
+        xumm.xapp.off && xumm.xapp.off('payload', onResult);
+        res({ signed: p.signed === true, uuid: p.uuid || payload.uuid, txid: p.txid || (p.response && p.response.txid) });
       };
-      xumm.on('payload', onResult);
+      xumm.xapp.on('payload', onResult);
     });
   }
 

@@ -42,7 +42,7 @@
 </style>
 <!-- Xaman xApp wiring. Fill these in the xApp / deployment; empty = standalone local-demo mode. -->
 <script>window.XAMAN_API_KEY='';window.LEDGERLINGS_ISSUER='';window.LEDGERLINGS_BACKEND='';</script>
-<script src="https://xumm.app/assets/cdn/xumm.min.js"></script>
+<script src="https://xaman.app/assets/cdn/xumm.min.js"></script>
 <script src="pet_rules.js"></script>
 <script src="xaman_bridge.js"></script>
 <script src="market_mood.js"></script>
@@ -276,12 +276,11 @@ document.querySelectorAll('[data-op]').forEach(b=>b.onclick=async ()=>{
   }
 })();
 
-// ── Xaman xApp integration points (stubs — docs: xumm.readme.io) ──
-// const xumm = new Xumm('YOUR_API_KEY');            // xApp runs inside Xaman's webview
-// async function readPet(nid){ /* AccountNFTs -> decode URI JSON */ }
-// async function sendInteraction(op){ await xumm.payload.create({txjson:{TransactionType:'Payment',
-//    Destination:ISSUER, Amount:'10', Memos:[{Memo:{MemoType:hex('ledgerlings/op'),MemoData:hex(op)}}]}}); }
-//   -> backend issuer parses the memo, runs pet_rules.step(), NFTokenModify (build/interaction.py).
+// ── Xaman xApp wiring is REAL and lives in xaman_bridge.js (init/interact/adopt/fetchPet). ──
+// Flow: tap → XamanBridge.interact(op) signs a Payment+memo in Xaman → the issuer backend
+// (server.js) parses the memo, runs pet_rules.step(), and NFTokenModifies the dNFT (interaction.py)
+// → the app re-reads authoritative state via XamanBridge.fetchPet(nid). No-SDK/no-key → local demo.
+// Config (set before xaman_bridge.js loads): window.XAMAN_API_KEY / LEDGERLINGS_ISSUER / LEDGERLINGS_BACKEND.
 
 // ── DANCE mini-game (tap-to-beat; awards BOUNDED happiness on close) ──
 const DC=document.getElementById('dc'),DX=DC.getContext('2d');
