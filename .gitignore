@@ -1,0 +1,14 @@
+# python venv + caches
+.venv/
+**/.venv/
+__pycache__/
+**/__pycache__/
+*.pyc
+# session/editor cruft
+.letta/
+**/.letta/
+.claude/
+.DS_Store
+node_modules/
+*.log
+.env

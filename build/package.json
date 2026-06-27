@@ -1,0 +1,18 @@
+{
+  "name": "ledgerlings-issuer",
+  "version": "0.1.0",
+  "private": true,
+  "type": "commonjs",
+  "description": "Ledgerlings issuer backend (Xaman + XRPL Dynamic NFTs)",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node diff_rules.js",
+    "test:rules": "node diff_rules.js 10000 60",
+    "pretest:rules": "python3 -c \"import pet_rules\""
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "xrpl": "^4.0.0",
+    "xumm-sdk": "^1.11.2"
+  }
+}

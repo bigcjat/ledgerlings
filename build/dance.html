@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>Ledgerlings — Dance!</title>
+<style>
+  :root{ --ink:#0B1B2B; --base:#1E8A9C; --glow:#19C3E6; --hot:#6FF0FF; --blush:#E86A8A; }
+  *{box-sizing:border-box; -webkit-tap-highlight-color:transparent; user-select:none}
+  html,body{margin:0;height:100%;background:radial-gradient(120% 90% at 50% 30%,#0e3a4a 0%,#0b1b2b 70%);
+    color:#dff;font-family:ui-monospace,Menlo,monospace;overflow:hidden;touch-action:manipulation}
+  #wrap{height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px}
+  #hud{display:flex;gap:22px;font-size:14px;letter-spacing:.5px}
+  #hud b{color:var(--hot)}
+  #combo{height:22px;font-size:20px;font-weight:700;color:var(--hot);text-shadow:0 0 12px var(--glow)}
+  canvas{image-rendering:pixelated;border-radius:18px}
+  #hint{font-size:13px;opacity:.7;height:18px}
+  #happy{width:240px;height:10px;border:1px solid #2b6;border-radius:6px;overflow:hidden;background:#0e3a4a}
+  #happyfill{height:100%;width:0;background:linear-gradient(90deg,var(--glow),var(--hot));transition:width .2s}
+  button{font:inherit;color:var(--ink);background:var(--hot);border:0;border-radius:10px;padding:10px 22px;
+    font-weight:700;cursor:pointer;box-shadow:0 4px 0 #2a8aa0}
+  button:active{transform:translateY(2px);box-shadow:0 2px 0 #2a8aa0}
+  #bpmrow{font-size:13px;opacity:.85;display:flex;gap:10px;align-items:center}
+  input[type=range]{accent-color:var(--glow)}
+</style>
+</head>
+<body>
+<div id="wrap">
+  <div id="hud"><div>SCORE <b id="score">0</b></div><div>BEST COMBO <b id="best">0</b></div>
+    <div>HAPPY <b id="hnum">0</b>/20</div></div>
+  <div id="combo"></div>
+  <canvas id="c" width="220" height="240"></canvas>
+  <div id="happy"><div id="happyfill"></div></div>
+  <div id="hint">tap the screen (or SPACE) when the ring snaps to the beat</div>
+  <div id="bpmrow">BPM <input id="bpm" type="range" min="80" max="160" value="120"><span id="bpmv">120</span>
+    <button id="start">Start</button></div>
+</div>
+<script>
+const C=document.getElementById('c'), X=C.getContext('2d');
+const INK='#0B1B2B',SHA='#0E3A4A',DRK='#12586B',BASE='#1E8A9C',LGT='#3FB6C4',HI='#7FE0E6',
+      CDEEP='#0A6E8C',GLOW='#19C3E6',HOT='#6FF0FF',WHT='#E8FFFF',EYEW='#F2FBFC',BLUSH='#E86A8A';
+let running=false, bpm=120, beatMs=60000/bpm, t0=0, score=0, combo=0, best=0, happy=0;
+let lastDance=-1e9, parts=[], shake=0, lastBeatShown=-1;
+
+const $=id=>document.getElementById(id);
+$('bpm').oninput=e=>{bpm=+e.target.value; beatMs=60000/bpm; $('bpmv').textContent=bpm;};
+$('start').onclick=()=>{ running=true; t0=performance.now(); score=combo=happy=0; setHud(); $('start').textContent='Restart'; };
+
+function setHud(){ $('score').textContent=score; $('best').textContent=best; $('hnum').textContent=happy;
+  $('happyfill').style.width=(happy/20*100)+'%'; }
+
+// ── tap handling: accuracy vs nearest beat ──
+function tap(){
+  if(!running) return;
+  const now=performance.now()-t0;
+  const phase=((now%beatMs)+beatMs)%beatMs;
+  const err=Math.min(phase, beatMs-phase);            // ms from the nearest beat
+  let label,gain,col;
+  if(err<70){ label='PERFECT'; gain=3; col=HOT; }
+  else if(err<140){ label='GOOD'; gain=1; col=GLOW; }
+  else { label='MISS'; gain=0; col='#9AA8B0'; }
+  if(gain){ combo++; best=Math.max(best,combo); score+=gain*(1+Math.floor(combo/5));
+    happy=Math.min(20, happy + (combo%4===0?1:0));    // BOUNDED, cooldowned -> the on-chain reward
+    lastDance=performance.now(); shake=Math.min(8,2+combo*0.3); burst(col, gain*8);
+  } else combo=0;
+  showCombo(label, col);
+  setHud();
+}
+addEventListener('pointerdown', tap);
+addEventListener('keydown', e=>{ if(e.code==='Space'){ e.preventDefault(); tap(); }});
+
+let comboTimer=0, comboTxt='', comboCol=HOT;
+function showCombo(txt,col){ comboTxt=(combo>1?combo+'x ':'')+txt; comboCol=col; comboTimer=performance.now(); }
+
+function burst(col,n){ for(let i=0;i<n;i++){ const a=Math.random()*6.28, s=1+Math.random()*3;
+  parts.push({x:110,y:140,vx:Math.cos(a)*s,vy:Math.sin(a)*s-1,life:1,col}); } }
+
+// ── draw the pet (procedural, ART_BIBLE palette) with squash/stretch + a beat-pulsing core ──
+function pet(cx,cy,bounce,squash,coreGlow){
+  const w=70*(1+squash*0.18), h=78*(1-squash*0.14);
+  X.save(); X.translate(cx, cy - bounce);
+  // body
+  const g=X.createLinearGradient(0,-h/2,0,h/2);
+  g.addColorStop(0,HI); g.addColorStop(.22,LGT); g.addColorStop(.6,BASE); g.addColorStop(1,SHA);
+  X.fillStyle=g; X.strokeStyle=INK; X.lineWidth=4;
+  rr(-w/2,-h/2,w,h,26); X.fill(); X.stroke();
+  // glossy highlight
+  X.fillStyle=HI; X.beginPath(); X.ellipse(-w*0.2,-h*0.28,12,7,0,0,6.28); X.fill();
+  // blush
+  X.fillStyle=BLUSH; X.beginPath(); X.ellipse(-w*0.38,4,5,4,0,0,6.28); X.ellipse(w*0.38,4,5,4,0,0,6.28); X.fill();
+  // eyes
+  for(const ex of [-16,16]){ X.fillStyle=INK; X.beginPath(); X.ellipse(ex,-10,7,9,0,0,6.28); X.fill();
+    X.fillStyle=EYEW; X.beginPath(); X.ellipse(ex-2,-14,2.6,2.6,0,0,6.28); X.fill();
+    X.fillStyle=GLOW; X.beginPath(); X.ellipse(ex+3,-6,1.6,1.6,0,0,6.28); X.fill(); }
+  // PROOF-CORE — pulses with the beat
+  const r=9+coreGlow*7;
+  const cg=X.createRadialGradient(0,18,0,0,18,r*1.8);
+  cg.addColorStop(0,WHT); cg.addColorStop(.3,HOT); cg.addColorStop(.7,GLOW); cg.addColorStop(1,'rgba(25,195,230,0)');
+  X.fillStyle=cg; X.beginPath(); X.arc(0,18,r*1.8,0,6.28); X.fill();
+  X.fillStyle=HOT; diamond(0,18,r*0.7);
+  X.restore();
+}
+function rr(x,y,w,h,r){X.beginPath();X.moveTo(x+r,y);X.arcTo(x+w,y,x+w,y+h,r);X.arcTo(x+w,y+h,x,y+h,r);
+  X.arcTo(x,y+h,x,y,r);X.arcTo(x,y,x+w,y,r);X.closePath();}
+function diamond(x,y,s){X.beginPath();X.moveTo(x,y-s);X.lineTo(x+s,y);X.lineTo(x,y+s);X.lineTo(x-s,y);X.closePath();X.fill();}
+
+function frame(){
+  requestAnimationFrame(frame);
+  X.clearRect(0,0,220,240);
+  const now=performance.now();
+  let bounce=0, squash=0, coreGlow=0.2, beatPhase=0;
+  if(running){
+    const tt=now-t0; beatPhase=((tt%beatMs)+beatMs)%beatMs/beatMs;   // 0..1 within a beat
+    // idle bounce on the beat (parabola peak at beat start)
+    const bp=Math.abs(Math.sin(beatPhase*Math.PI));
+    bounce=bp*10; squash=(1-bp)*0.5*(beatPhase<0.5?1:0.4);
+    coreGlow=0.2+0.6*Math.pow(1-beatPhase,2);                        // core flashes on the beat
+    // extra dance pop right after a good tap
+    const since=now-lastDance;
+    if(since<260){ const k=1-since/260; bounce+=18*k; squash+=0.4*k; coreGlow=Math.min(1,coreGlow+0.5*k); }
+    // approach ring -> snaps to size at the beat
+    const ringR=14+90*(1-beatPhase);
+    X.strokeStyle='rgba(111,240,255,'+(0.25+0.5*beatPhase)+')'; X.lineWidth=2;
+    X.beginPath(); X.arc(110,150,Math.max(14,ringR),0,6.28); X.stroke();
+    if(beatPhase<0.06 && lastBeatShown!==Math.floor(tt/beatMs)){ lastBeatShown=Math.floor(tt/beatMs); }
+  }
+  // screen shake
+  shake*=0.86; const sx=(Math.random()-0.5)*shake, sy=(Math.random()-0.5)*shake;
+  X.save(); X.translate(sx,sy);
+  pet(110,150,bounce,squash,coreGlow);
+  // particles
+  parts=parts.filter(p=>p.life>0);
+  for(const p of parts){ p.x+=p.vx; p.y+=p.vy; p.vy+=0.15; p.life-=0.03;
+    X.globalAlpha=Math.max(0,p.life); X.fillStyle=p.col; X.fillRect(p.x,p.y,3,3); }
+  X.globalAlpha=1; X.restore();
+  // combo text
+  if(now-comboTimer<450){ const a=1-(now-comboTimer)/450; X.globalAlpha=a;
+    X.fillStyle=comboCol; X.font='bold 22px ui-monospace,monospace'; X.textAlign='center';
+    X.fillText(comboTxt,110,70-(1-a)*20); X.globalAlpha=1; }
+}
+frame();
+</script>
+</body>
+</html>
