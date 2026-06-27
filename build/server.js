@@ -21,8 +21,26 @@ const TAXON = 7777, TF_MUTABLE_TRANSFERABLE = 8 | 16;
 
 const hex = s => Buffer.from(s, 'utf8').toString('hex').toUpperCase();
 const unhex = h => Buffer.from(h, 'hex').toString('utf8');
-const enc = o => hex(JSON.stringify(o));
-const dec = h => JSON.parse(unhex(h));
+
+// Compact on-ledger codec — the NFT URI is capped at 256 bytes; full-key JSON was 254 (≈no headroom).
+// Short keys + omit `loadout` (cosmetic, step() never reads it) shrink the wire form to ~150 bytes while
+// pet_rules state shape stays UNCHANGED in memory (so the diff harness + rules are untouched). Fixed key
+// order => deterministic string, so the verifier's enc(derived) === enc(current) still holds.
+const K = { v: 'v', owner: 'o', birth: 'b', last_ix: 'x', hunger: 'h', happiness: 'j', health: 'l',
+  stage: 's', form: 'f', alive: 'a', age: 'g', care: 'c', care_max: 'm', death_cause: 'd',
+  last_feed: 'F', last_play: 'P' };
+const KINV = Object.fromEntries(Object.entries(K).map(([f, s]) => [s, f]));
+const enc = state => {
+  const o = {};
+  for (const f in K) o[K[f]] = state[f];          // fixed order from K -> deterministic
+  return hex(JSON.stringify(o));
+};
+const dec = h => {
+  const o = JSON.parse(unhex(h));
+  const s = { loadout: [] };                        // loadout not stored on-ledger; restore the default
+  for (const sk in o) s[KINV[sk] || sk] = o[sk];
+  return s;
+};
 
 async function withClient(fn) {
   const c = new xrpl.Client(ENDPOINT); await c.connect();
