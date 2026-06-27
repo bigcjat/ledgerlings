@@ -50,25 +50,36 @@ def verify_pet(client, issuer_addr, nid):
     MEMO_TYPE = "ledgerlings/op"
     OP = {"feed": R.FEED, "play": R.PLAY, "clean": R.CLEAN, "heal": R.HEAL}
 
+    # compact on-ledger codec — MIRRORS server.js: short keys + loadout omitted. (Keep in sync.)
+    _KINV = {"v": "v", "o": "owner", "b": "birth", "x": "last_ix", "h": "hunger", "j": "happiness",
+             "l": "health", "s": "stage", "f": "form", "a": "alive", "g": "age", "c": "care",
+             "m": "care_max", "d": "death_cause", "F": "last_feed", "P": "last_play"}
+    def decode_uri(uri_hex):
+        o = json.loads(hex_to_str(uri_hex))
+        s = {"loadout": []}                       # loadout not stored on-ledger; restore default
+        for sk, val in o.items():
+            s[_KINV.get(sk, sk)] = val
+        return s
+
     # current on-ledger state
     current = None
     for n in client.request(AccountNFTs(account=issuer_addr)).result["account_nfts"]:
         if n["NFTokenID"] == nid:
-            current = json.loads(hex_to_str(n["URI"]))
+            current = decode_uri(n["URI"])
     if current is None:
         return False, "pet not found at issuer"
 
-    # walk issuer history: the NFTokenMint URI = genesis; Payments with op memos = interactions
+    # walk issuer history (multi-pet sound): genesis = the mint whose meta.nftoken_id == nid;
+    # interactions = Payments memo'd "<op>|<nid>" for THIS nid (so other pets are not mixed in).
     genesis_state, interactions = None, []
     txs = client.request(AccountTx(account=issuer_addr, limit=200, forward=True)).result["transactions"]
     for t in txs:
         tx = t.get("tx") or t.get("tx_json") or {}
+        meta = t.get("meta") or t.get("metaData") or {}
         lseq = tx.get("ledger_index") or t.get("ledger_index")
-        if tx.get("TransactionType") == "NFTokenMint" and tx.get("URI"):
+        if tx.get("TransactionType") == "NFTokenMint" and tx.get("URI") and meta.get("nftoken_id") == nid:
             try:
-                g = json.loads(hex_to_str(tx["URI"]))
-                if g.get("birth") is not None:
-                    genesis_state = g
+                genesis_state = decode_uri(tx["URI"])
             except Exception:
                 pass
         elif tx.get("TransactionType") == "Payment" and tx.get("Destination") == issuer_addr:
@@ -76,8 +87,11 @@ def verify_pet(client, issuer_addr, nid):
                 md = m.get("Memo", {})
                 try:
                     if hex_to_str(md.get("MemoType", "")) == MEMO_TYPE:
-                        interactions.append((OP.get(hex_to_str(md.get("MemoData", "")), 0),
-                                             lseq, tx.get("Account")))
+                        parts = hex_to_str(md.get("MemoData", "")).split("|")
+                        op_name = parts[0]
+                        m_nid = parts[1] if len(parts) > 1 else None
+                        if m_nid == nid:
+                            interactions.append((OP.get(op_name, 0), lseq, tx.get("Account")))
                 except Exception:
                     pass
     if genesis_state is None:
