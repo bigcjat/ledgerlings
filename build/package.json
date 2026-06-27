@@ -6,6 +6,7 @@
   "description": "Ledgerlings issuer backend (Xaman + XRPL Dynamic NFTs)",
   "scripts": {
     "start": "node server.js",
+    "smoke": "node backend_smoke.js",
     "test": "node diff_rules.js",
     "test:rules": "node diff_rules.js 10000 60",
     "pretest:rules": "python3 -c \"import pet_rules\""

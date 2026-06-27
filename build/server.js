@@ -13,7 +13,8 @@ const xrpl = require('xrpl');
 const { XummSdk } = require('xumm-sdk');
 const R = require('./pet_rules.js');
 
-const sdk = new XummSdk(process.env.XAMAN_API_KEY, process.env.XAMAN_API_SECRET);
+// sdk only needed for /interact (verifying signed payloads); lazy so /adopt + /pet + tests run without it.
+const sdk = process.env.XAMAN_API_KEY ? new XummSdk(process.env.XAMAN_API_KEY, process.env.XAMAN_API_SECRET) : null;
 const ENDPOINT = process.env.XRPL_ENDPOINT || 'wss://s.altnet.rippletest.net:51233';
 const ISSUER_SEED = process.env.LEDGERLINGS_ISSUER_SEED;
 const TAXON = 7777, TF_MUTABLE_TRANSFERABLE = 8 | 16;
@@ -65,6 +66,7 @@ app.get('/pet/:nid', async (req, res) => {
 app.post('/interact', async (req, res) => {
   const { uuid, nid } = req.body;
   if (!uuid || !nid) return res.status(400).json({ error: 'uuid + nid required' });
+  if (!sdk) return res.status(503).json({ error: 'signing not configured (set XAMAN_API_KEY/SECRET)' });
   // 1) verify the sign request was actually signed
   const pl = await sdk.payload.get(uuid);
   if (!pl || !pl.meta.signed) return res.status(400).json({ error: 'not signed' });
@@ -88,5 +90,10 @@ app.post('/interact', async (req, res) => {
   res.json(out);
 });
 
-const PORT = process.env.PORT || 8788;
-app.listen(PORT, () => console.log(`Ledgerlings issuer on :${PORT} (endpoint ${ENDPOINT})`));
+// export the issuer primitives so a harness can drive the logic without starting a server.
+module.exports = { app, withClient, readState, submit, enc, dec, hex, unhex, R, TAXON, TF_MUTABLE_TRANSFERABLE, ENDPOINT };
+
+if (require.main === module) {
+  const PORT = process.env.PORT || 8788;
+  app.listen(PORT, () => console.log(`Ledgerlings issuer on :${PORT} (endpoint ${ENDPOINT})`));
+}
