@@ -47,14 +47,17 @@ const XamanBridge = (() => {
     });
     xumm.xapp.openSignRequest(payload);              // open the sign UI inside Xaman
     return await new Promise((res) => {
-      // openSignRequest resolves via the xApp 'payload' event (NOT xumm.on). One-shot + cleanup.
-      // NOTE: verify the event payload shape against the live xumm SDK during the first xApp test.
-      const onResult = (data) => {
-        const p = data && data.payload;
-        if (!p) return;
-        if (p.uuid && payload.uuid && p.uuid !== payload.uuid) return;   // ignore unrelated payloads
+      // openSignRequest resolves via the xApp 'payload' event (NOT xumm.on). Per docs the event is
+      // { reason: 'SIGNED' | 'DECLINED', uuid } — there is no data.payload object and no txid; fetch
+      // txid via payload.get(uuid). One-shot + cleanup.
+      const onResult = async (data) => {
+        if (!data || !data.uuid) return;
+        if (payload.uuid && data.uuid !== payload.uuid) return;          // ignore unrelated payloads
         xumm.xapp.off && xumm.xapp.off('payload', onResult);
-        res({ signed: p.signed === true, uuid: p.uuid || payload.uuid, txid: p.txid || (p.response && p.response.txid) });
+        const signed = data.reason === 'SIGNED';
+        let txid = null;
+        if (signed) { try { const full = await xumm.payload.get(data.uuid); txid = full && full.response && full.response.txid; } catch (e) { /* txid best-effort */ } }
+        res({ signed, uuid: data.uuid, txid });
       };
       xumm.xapp.on('payload', onResult);
     });
