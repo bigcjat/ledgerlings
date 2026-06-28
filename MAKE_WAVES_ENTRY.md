@@ -43,7 +43,7 @@ Dane Brown — solo builder (kairovault.com). Background: XRPL/Xahau data + form
 **Status / demo plan:**
 Verification + proof-anchoring primitives already built and tested. 90-day plan: pet rules + NFToken integration → testnet pet living/aging/dying on real ledger hashes → the "Verify my pet" panel → public adopt/share launch + traction metrics.
 
-**Links:** kairovault.com · (repo + live testnet demo to be added) · contact: @Cryptocrazy589 / daner3@gmail.com
+**Links:** Live demo: https://hugegreencandle.github.io/ledgerlings/ · kairovault.com · (repo + on-ledger proof tx to be added) · contact: @Cryptocrazy589 / daner3@gmail.com
 
 ---
 
