@@ -2,8 +2,13 @@
 
 Bring your community's character into Ledgerlings as a **playable, provably-fair on-chain pet**.
 Your art is a **skin**; every character runs the *same* open rules engine (`pet_rules`) + the same
-"Verify my pet" check — so fairness is identical no matter whose character it is. You keep attribution
-and a **5% royalty** on every secondary sale.
+"Verify my pet" check — so fairness is identical no matter whose character it is. You keep attribution — and resale royalties route to **you** when your character is minted with
+**you as the on-chain Issuer** via XRPL *authorized minting* (you authorize Ledgerlings to mint on your
+behalf; the NFT's `Issuer` is your address, so the 5% `TransferFee` pays you, not us).
+
+> **Status:** creator-kept royalties require *authorized minting* (`Issuer` = your address). If a character
+> is instead minted under the Ledgerlings issuer, the resale royalty supports the project — we'll always
+> tell you which applies before minting.
 
 ---
 
@@ -62,8 +67,9 @@ Every character MUST use the same anchor *names*; tune the *coordinates* to your
 1. Draw your character to the template; export transparent PNG(s).
 2. Fill `character.json` (above).
 3. Submit art + manifest (channel TBD — repo PR / form / DM).
-4. We review (style + anchors + IP rights — you must own the character), then the **issuer mints** it into
-   the character roster as a Ledgerlings-compatible pet; attribution + 5% royalty are yours.
+4. We review (style + anchors + IP rights — you must own the character), then we mint your character via
+   **authorized minting** (`Issuer` = your address) into the character roster as a Ledgerlings-compatible
+   pet — so attribution and the 5% resale royalty are **yours**.
 
 ## 7. Roadmap (engineering, not creator-facing)
 - `roster.json` registry of approved characters (game reads it to offer them).
