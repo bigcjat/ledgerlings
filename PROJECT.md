@@ -244,3 +244,10 @@ The dress-up system only works if the base is fixed. Non-negotiable:
    For in-game overlay consistency, the canonical base + accessories should be pixel-art too (clean chibi/vector
    is marketing-only). The collaborator canvas (build/canvas.html) is currently freeform paint — upgrade to a
    pixel-grid mode if pixel is the canonical style, so drawn accessories align to the sprite grid.
+
+## 2026-06-28 — base + lifecycle + participation backend DONE
+- Base character LOCKED: upright bear (image-4) = `assets/base-character.png`.
+- Full 5-stage lifecycle: `assets/stages/{egg,baby,teen,adult,elder}.png` + `stages.json` (consistent bear line, FLUX img2img).
+- Participation backend LIVE on Railway: `/adopt /interact /verify /mint-accessory /register-character /roster` — all mint with 5% royalty.
+- Collaborator canvas (build/canvas.html) overlays the base bear. CHARACTER_TEMPLATE.md = bring-your-character spec.
+- REMAINING: transparent-bg cuts; in-game pixel-sprite swap; POST the collaborator recruitment draft; DM partner collections.
