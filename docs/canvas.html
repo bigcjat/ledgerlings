@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+<title>Ledgerlings — Collaborator Canvas</title>
+<style>
+  *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+  :root{--bg:#0a0f0a;--panel:#0e1a14;--glow:#00ff66;--hot:#7CFFB0;--dim:#5a7a6a}
+  body{background:var(--bg);color:#cfe;font-family:'Inter',system-ui,sans-serif;line-height:1.5;display:flex;flex-direction:column;align-items:center;padding:18px 12px 60px}
+  h1{font-family:'Orbitron',monospace;color:var(--glow);font-size:18px;letter-spacing:.04em}
+  .sub{color:var(--dim);font-size:12px;margin:4px 0 14px;text-align:center;max-width:520px}
+  .wrap{display:flex;gap:18px;flex-wrap:wrap;justify-content:center;align-items:flex-start}
+  .stage{position:relative;width:320px;height:320px;background:
+     conic-gradient(#1a241c 90deg,#141d16 0 180deg,#1a241c 0 270deg,#141d16 0) 0 0/24px 24px;
+     border:1px solid rgba(0,255,102,.3);border-radius:10px;touch-action:none}
+  #pad{position:absolute;inset:0;border-radius:10px;cursor:crosshair}
+  #tmpl{position:absolute;inset:0;pointer-events:none;opacity:.18;display:none}
+  .panel{background:var(--panel);border:1px solid rgba(0,255,102,.15);border-radius:10px;padding:14px;width:280px}
+  label{display:block;font-size:11px;color:var(--dim);margin:10px 0 4px;font-family:'Share Tech Mono',monospace}
+  input,select,button{font-family:inherit}
+  input[type=text],select{width:100%;background:#08120c;border:1px solid rgba(0,255,102,.2);color:#cfe;border-radius:7px;padding:8px}
+  .row{display:flex;gap:8px;align-items:center}
+  .tools{display:flex;gap:6px;flex-wrap:wrap;margin-top:6px}
+  .tools button{flex:1;min-width:60px;background:#08120c;border:1px solid rgba(0,255,102,.2);color:#cfe;border-radius:7px;padding:8px;cursor:pointer;font-size:12px}
+  .tools button.on{background:rgba(0,255,102,.15);border-color:var(--glow);color:var(--glow)}
+  .primary{width:100%;margin-top:12px;background:var(--glow);color:#04130a;font-weight:700;border:none;border-radius:8px;padding:11px;cursor:pointer;font-size:14px}
+  .ghost{width:100%;margin-top:8px;background:transparent;border:1px solid rgba(0,255,102,.3);color:var(--glow);border-radius:8px;padding:9px;cursor:pointer}
+  #out{font-family:'Share Tech Mono',monospace;font-size:11px;color:var(--hot);margin-top:10px;word-break:break-all;min-height:16px}
+  .note{font-size:10px;color:var(--dim);margin-top:8px;line-height:1.6}
+  input[type=color]{width:42px;height:34px;border:none;background:none;padding:0}
+  input[type=range]{flex:1}
+</style>
+</head>
+<body>
+<!-- Point this at the live issuer backend. Empty = draw/export only (no mint). -->
+<script>window.LEDGERLINGS_BACKEND='https://ledgerlings-backend-production.up.railway.app';</script>
+
+<h1>Ledgerlings — Collaborator Canvas</h1>
+<div class="sub">Draw an accessory, outfit, or background for the pets. Keep to the template so it lines up in-game.
+Mint it on-ledger and a <b>5% royalty</b> flows to you on every resale. (Testnet.)</div>
+
+<div class="wrap">
+  <div class="stage">
+    <canvas id="pad" width="320" height="320"></canvas>
+    <img id="tmpl" alt="pet template" />
+  </div>
+
+  <div class="panel">
+    <div class="row"><div style="flex:1"><label>Brush color</label><input type="color" id="color" value="#00ff66"/></div>
+      <div style="flex:2"><label>Size</label><input type="range" id="size" min="1" max="48" value="8"/></div></div>
+
+    <div class="tools">
+      <button id="bBrush" class="on">✏️ Brush</button>
+      <button id="bErase">🧽 Eraser</button>
+      <button id="bUndo">↶ Undo</button>
+      <button id="bClear">🗑 Clear</button>
+      <button id="bTmpl">👁 Template</button>
+    </div>
+
+    <label>Your handle / artist name</label>
+    <input type="text" id="artist" placeholder="@yourhandle" />
+    <label>Accessory name</label>
+    <input type="text" id="name" placeholder="e.g. Wizard Hat" />
+    <label>Type</label>
+    <select id="kind">
+      <option value="hat">Hat</option><option value="outfit">Outfit</option>
+      <option value="held">Held item</option><option value="face">Face</option>
+      <option value="background">Background</option><option value="accessory">Other</option>
+    </select>
+
+    <button class="ghost" id="bDownload">⬇ Download PNG</button>
+    <button class="primary" id="bMint">⛓ Mint accessory (5% royalty)</button>
+    <div id="out"></div>
+    <div class="note">MVP: minting anchors your name + a hash of the image on-ledger (provenance + royalty).
+      Image hosting (IPFS) + delivering the NFT to your wallet come next. Set a custom pet template via
+      <code>?tmpl=URL</code>.</div>
+  </div>
+</div>
+
+<script>
+const pad = document.getElementById('pad'), ctx = pad.getContext('2d');
+let drawing=false, erasing=false, last=null;
+const stack=[]; // undo snapshots
+const colorEl=document.getElementById('color'), sizeEl=document.getElementById('size');
+
+// optional pet template overlay (?tmpl=URL)
+const tmplUrl=new URLSearchParams(location.search).get('tmpl');
+if(tmplUrl){ const t=document.getElementById('tmpl'); t.src=tmplUrl; }
+
+function snapshot(){ stack.push(ctx.getImageData(0,0,pad.width,pad.height)); if(stack.length>30) stack.shift(); }
+function pos(e){ const r=pad.getBoundingClientRect(); const p=e.touches?e.touches[0]:e; return {x:(p.clientX-r.left)*(pad.width/r.width), y:(p.clientY-r.top)*(pad.height/r.height)}; }
+function start(e){ e.preventDefault(); snapshot(); drawing=true; last=pos(e); dot(last); }
+function move(e){ if(!drawing)return; e.preventDefault(); const p=pos(e); line(last,p); last=p; }
+function end(){ drawing=false; last=null; }
+function stroke(){ ctx.lineCap='round'; ctx.lineJoin='round'; ctx.lineWidth=+sizeEl.value;
+  if(erasing){ ctx.globalCompositeOperation='destination-out'; ctx.strokeStyle='rgba(0,0,0,1)'; ctx.fillStyle='rgba(0,0,0,1)'; }
+  else { ctx.globalCompositeOperation='source-over'; ctx.strokeStyle=colorEl.value; ctx.fillStyle=colorEl.value; } }
+function dot(p){ stroke(); ctx.beginPath(); ctx.arc(p.x,p.y,(+sizeEl.value)/2,0,7); ctx.fill(); }
+function line(a,b){ stroke(); ctx.beginPath(); ctx.moveTo(a.x,a.y); ctx.lineTo(b.x,b.y); ctx.stroke(); }
+
+pad.addEventListener('mousedown',start); pad.addEventListener('mousemove',move);
+window.addEventListener('mouseup',end);
+pad.addEventListener('touchstart',start,{passive:false}); pad.addEventListener('touchmove',move,{passive:false});
+window.addEventListener('touchend',end);
+
+const setTool=(eraseMode)=>{ erasing=eraseMode;
+  document.getElementById('bBrush').classList.toggle('on',!eraseMode);
+  document.getElementById('bErase').classList.toggle('on',eraseMode); };
+document.getElementById('bBrush').onclick=()=>setTool(false);
+document.getElementById('bErase').onclick=()=>setTool(true);
+document.getElementById('bUndo').onclick=()=>{ if(stack.length) ctx.putImageData(stack.pop(),0,0); };
+document.getElementById('bClear').onclick=()=>{ snapshot(); ctx.clearRect(0,0,pad.width,pad.height); };
+document.getElementById('bTmpl').onclick=()=>{ const t=document.getElementById('tmpl'); t.style.display=t.style.display==='block'?'none':'block'; };
+
+function pngBlobURL(){ return pad.toDataURL('image/png'); }
+document.getElementById('bDownload').onclick=()=>{ const a=document.createElement('a');
+  a.href=pngBlobURL(); a.download=(document.getElementById('name').value||'ledgerlings-accessory')+'.png'; a.click(); };
+
+async function sha256OfCanvas(){ const blob=await new Promise(r=>pad.toBlob(r,'image/png'));
+  const buf=await blob.arrayBuffer(); const h=await crypto.subtle.digest('SHA-256',buf);
+  return [...new Uint8Array(h)].map(b=>b.toString(16).padStart(2,'0')).join(''); }
+
+document.getElementById('bMint').onclick=async()=>{
+  const out=document.getElementById('out');
+  const artist=document.getElementById('artist').value.trim();
+  const name=document.getElementById('name').value.trim();
+  const kind=document.getElementById('kind').value;
+  if(!artist||!name){ out.textContent='⚠ enter your handle + an accessory name first.'; return; }
+  if(!window.LEDGERLINGS_BACKEND){ out.textContent='⚠ no backend configured — Download PNG instead.'; return; }
+  out.textContent='hashing + minting on testnet…';
+  try{
+    const sha256=await sha256OfCanvas();
+    const r=await fetch(window.LEDGERLINGS_BACKEND+'/mint-accessory',{method:'POST',
+      headers:{'content-type':'application/json'}, body:JSON.stringify({artist,name,kind,sha256})});
+    const j=await r.json();
+    if(j.nid) out.innerHTML='✅ minted! NFTokenID:<br>'+j.nid+'<br>royalty '+(j.meta.r/1000)+'% · hash '+sha256.slice(0,16)+'…';
+    else out.textContent='✗ '+(j.error||'mint failed');
+  }catch(e){ out.textContent='✗ '+e.message; }
+};
+</script>
+</body>
+</html>

@@ -234,3 +234,13 @@ this is a **viral funnel + modest revenue + xahc-prover showcase**, not the ¥12
   on-chain rules = provably fair; real-world inputs (steps/sensors) = off-chain engagement layer,
   NEVER inside the fairness guarantee (spoofable → would break the brand). Steps→energy you spend
   on on-chain actions; best-effort device attestation; or steps purely cosmetic.
+
+## Collaborator dress-up discipline (LOCKED RULE 2026-06-28)
+The dress-up system only works if the base is fixed. Non-negotiable:
+1. Generate the BASE character first, then LOCK it: same pose, size, canvas, art style, and SEED every time.
+2. Accessories/clothes/backgrounds only line up if collaborators draw to a fixed TEMPLATE (the locked base + grid).
+3. Hand collaborators a REFERENCE SHEET (front + side, neutral T-pose, on a grid) as the spec.
+4. STYLE DECISION (decide once, then never drift): the shipped game is PIXEL sprites (render_stages.py / ART_BIBLE).
+   For in-game overlay consistency, the canonical base + accessories should be pixel-art too (clean chibi/vector
+   is marketing-only). The collaborator canvas (build/canvas.html) is currently freeform paint — upgrade to a
+   pixel-grid mode if pixel is the canonical style, so drawn accessories align to the sprite grid.

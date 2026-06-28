@@ -22,6 +22,8 @@ const TAXON = 7777, TF_MUTABLE_TRANSFERABLE = 8 | 16;
 // 0–50000 = 0.000%–50.000% (0.001% steps). 5000 = 5%. Requires tfTransferable (set above).
 // FINALIZED default = 5%; Dane confirms the final business number.
 const ROYALTY_BPS = 5000;
+// Collaborator accessories/backgrounds: separate taxon, transferable (royalty), not mutable.
+const ACCESSORY_TAXON = 7778, TF_TRANSFERABLE = 8;
 
 const hex = s => Buffer.from(s, 'utf8').toString('hex').toUpperCase();
 const unhex = h => Buffer.from(h, 'hex').toString('utf8');
@@ -62,7 +64,15 @@ async function submit(c, w, tx) {
 }
 
 const app = express();
-app.use(express.json());
+app.use(express.json({ limit: '8mb' }));   // accessory submissions carry a small PNG hash + metadata
+// CORS — the canvas tool + demo are served from GitHub Pages (different origin) and call this backend.
+app.use((req, res, next) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Headers', 'Content-Type');
+  res.header('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
+  if (req.method === 'OPTIONS') return res.sendStatus(204);
+  next();
+});
 
 // adopt: mint a mutable pet dNFT owned (in-state) by the user
 app.post('/adopt', async (req, res) => {
@@ -163,6 +173,27 @@ app.post('/interact', async (req, res) => {
     return { result, state: next, applied: JSON.stringify(next) !== JSON.stringify(state) };
   });
   res.json(out);
+});
+
+// mint-accessory: a collaborator's drawn accessory/background → an on-ledger NFT with the 5% royalty.
+// The issuer mints (taxon=ACCESSORY_TAXON, transferable); artist + image hash + name are anchored in the
+// URI (compact, <=256 bytes). MVP: the URI carries provenance (name/artist/sha256); hosting the image
+// itself (IPFS/Arweave) + delivering the NFT to the artist's wallet are the production follow-ups.
+app.post('/mint-accessory', async (req, res) => {
+  const { artist, name, sha256, kind } = req.body || {};
+  if (!artist || !name || !sha256) return res.status(400).json({ error: 'artist, name, sha256 required' });
+  try {
+    const out = await withClient(async (c, w) => {
+      const meta = { t: 'acc', k: String(kind || 'accessory').slice(0, 12), n: String(name).slice(0, 40),
+        a: String(artist).slice(0, 40), h: String(sha256).slice(0, 64), r: ROYALTY_BPS };
+      if (Buffer.byteLength(JSON.stringify(meta)) > 256) meta.h = meta.h.slice(0, 32);  // keep URI <=256 bytes
+      const prepared = await c.autofill({ TransactionType: 'NFTokenMint', Account: w.classicAddress,
+        NFTokenTaxon: ACCESSORY_TAXON, Flags: TF_TRANSFERABLE, TransferFee: ROYALTY_BPS, URI: hex(JSON.stringify(meta)) });
+      const r = (await c.submitAndWait(w.sign(prepared).tx_blob)).result;
+      return { result: r.meta.TransactionResult, nid: r.meta.nftoken_id, meta };
+    });
+    res.json(out);
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // export the issuer primitives so a harness can drive the logic without starting a server.
