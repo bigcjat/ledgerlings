@@ -27,6 +27,10 @@ const ACCESSORY_TAXON = 7778, TF_TRANSFERABLE = 8;
 // Bring-your-character registrations (NFT projects adding a playable skin): own taxon. The roster is
 // just "all issuer NFTs at this taxon" — persistent on-ledger, no database needed.
 const CHARACTER_TAXON = 7779;
+// SECURITY: all mint/write endpoints require this admin token (fail-closed). No anon minting from the
+// issuer. ALLOWED_ORIGIN locks CORS. Set both in the host env.
+const ADMIN_TOKEN = process.env.ADMIN_TOKEN || '';
+const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN || 'https://hugegreencandle.github.io';
 
 const hex = s => Buffer.from(s, 'utf8').toString('hex').toUpperCase();
 const unhex = h => Buffer.from(h, 'hex').toString('utf8');
@@ -68,17 +72,25 @@ async function submit(c, w, tx) {
 
 const app = express();
 app.use(express.json({ limit: '8mb' }));   // accessory submissions carry a small PNG hash + metadata
-// CORS — the canvas tool + demo are served from GitHub Pages (different origin) and call this backend.
+// CORS — locked to our own origin (not '*'). The canvas/demo are served from GitHub Pages.
 app.use((req, res, next) => {
-  res.header('Access-Control-Allow-Origin', '*');
-  res.header('Access-Control-Allow-Headers', 'Content-Type');
+  res.header('Access-Control-Allow-Origin', ALLOWED_ORIGIN);
+  res.header('Access-Control-Allow-Headers', 'Content-Type, x-admin-token');
   res.header('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
   if (req.method === 'OPTIONS') return res.sendStatus(204);
   next();
 });
 
+// Auth gate for all write/mint endpoints. Fail-closed: no token configured OR mismatch => rejected.
+// No anonymous minting from the issuer wallet (closes the open-signing-oracle hole).
+function requireAdmin(req, res, next) {
+  if (!ADMIN_TOKEN) return res.status(503).json({ error: 'minting not configured (ADMIN_TOKEN unset)' });
+  if (req.header('x-admin-token') !== ADMIN_TOKEN) return res.status(401).json({ error: 'unauthorized' });
+  next();
+}
+
 // adopt: mint a mutable pet dNFT owned (in-state) by the user
-app.post('/adopt', async (req, res) => {
+app.post('/adopt', requireAdmin, async (req, res) => {
   const owner = req.body.owner;
   if (!owner) return res.status(400).json({ error: 'owner required' });
   const out = await withClient(async (c, w) => {
@@ -150,7 +162,7 @@ app.get('/verify/:nid', async (req, res) => {
 });
 
 // interact: verify the signed Payment, apply rules, NFTokenModify
-app.post('/interact', async (req, res) => {
+app.post('/interact', requireAdmin, async (req, res) => {
   const { uuid, nid } = req.body;
   if (!uuid || !nid) return res.status(400).json({ error: 'uuid + nid required' });
   if (!sdk) return res.status(503).json({ error: 'signing not configured (set XAMAN_API_KEY/SECRET)' });
@@ -182,7 +194,7 @@ app.post('/interact', async (req, res) => {
 // The issuer mints (taxon=ACCESSORY_TAXON, transferable); artist + image hash + name are anchored in the
 // URI (compact, <=256 bytes). MVP: the URI carries provenance (name/artist/sha256); hosting the image
 // itself (IPFS/Arweave) + delivering the NFT to the artist's wallet are the production follow-ups.
-app.post('/mint-accessory', async (req, res) => {
+app.post('/mint-accessory', requireAdmin, async (req, res) => {
   const { artist, name, sha256, kind } = req.body || {};
   if (!artist || !name || !sha256) return res.status(400).json({ error: 'artist, name, sha256 required' });
   try {
@@ -203,7 +215,7 @@ app.post('/mint-accessory', async (req, res) => {
 // CHARACTER_TEMPLATE.md). Mints a registration NFT (taxon=CHARACTER_TAXON) anchoring creator + name +
 // collection + art hash + a hash of the anchor map; 5% royalty. The character runs the SHARED rules
 // engine — registration is attribution + roster membership, not game logic.
-app.post('/register-character', async (req, res) => {
+app.post('/register-character', requireAdmin, async (req, res) => {
   const { creator, name, collection, sha256, anchorsHash } = req.body || {};
   if (!creator || !name || !sha256) return res.status(400).json({ error: 'creator, name, sha256 required' });
   try {
