@@ -84,9 +84,10 @@ let drawing=false, erasing=false, last=null;
 const stack=[]; // undo snapshots
 const colorEl=document.getElementById('color'), sizeEl=document.getElementById('size');
 
-// optional pet template overlay (?tmpl=URL)
-const tmplUrl=new URLSearchParams(location.search).get('tmpl');
-if(tmplUrl){ const t=document.getElementById('tmpl'); t.src=tmplUrl; }
+// pet template overlay — locked base character (override with ?tmpl=URL). Shown by default so
+// collaborators draw accessories onto the actual pet for alignment.
+const tmplUrl=new URLSearchParams(location.search).get('tmpl') || 'assets/base-character.png';
+{ const t=document.getElementById('tmpl'); t.src=tmplUrl; t.style.display='block'; }
 
 function snapshot(){ stack.push(ctx.getImageData(0,0,pad.width,pad.height)); if(stack.length>30) stack.shift(); }
 function pos(e){ const r=pad.getBoundingClientRect(); const p=e.touches?e.touches[0]:e; return {x:(p.clientX-r.left)*(pad.width/r.width), y:(p.clientY-r.top)*(pad.height/r.height)}; }
