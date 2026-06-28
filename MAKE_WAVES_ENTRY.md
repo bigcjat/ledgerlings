@@ -5,7 +5,6 @@
 ---
 
 **Project name:** Ledgerlings — *the provably-fair on-chain pet*
-*(name decision: keep "Ledgerlings", or go chain-neutral e.g. "Provable Pets" / "Honest Pets" for a pure-XRPL submission — flag for Dane.)*
 
 **Tagline (one line):**
 A virtual pet that lives on the XRP Ledger — you raise it, it ages, it can die if you neglect it, and its fairness isn't a promise, it's something you can check on-chain.
@@ -16,7 +15,7 @@ A virtual pet that lives on the XRP Ledger — you raise it, it ages, it can die
 Every web2 pet game can quietly change the rules, nerf your pet, rug a reward, or shut down the server. Even "on-chain" games usually ask you to trust an off-chain backend. Players have no way to verify the game treated them fairly.
 
 **What it is / what it does:**
-Ledgerlings is a Tamagotchi-style creature that lives on the XRP Ledger. You adopt one (it's an XRPL NFToken), and you raise it with simple on-ledger interactions — feed, play, clean, heal. It ages through lifecycle stages over ledger-time (egg → baby → teen → adult → elder), and neglect can kill it. How well you care for it deterministically decides which rarer adult/elder form it evolves into — no hidden RNG, no server.
+Ledgerlings is a virtual pet creature that lives on the XRP Ledger. You adopt one (it's an XRPL NFToken), and you raise it with simple on-ledger interactions — feed, play, clean, heal. It ages through lifecycle stages over ledger-time (egg → baby → teen → adult → elder), and neglect can kill it. How well you care for it deterministically decides which rarer adult/elder form it evolves into — no hidden RNG, no server.
 
 The twist: **"Verify my pet."** A button that, on-chain, lets anyone confirm the game is fair — the rules are open and deterministic, every state transition is reproducible from the public ledger, and the fairness record is **anchored on the XRP Ledger** so it can't be backdated or quietly edited (not even by us). Fairness you re-derive yourself, not a badge you trust.
 
@@ -44,7 +43,7 @@ Dane Brown — solo builder (kairovault.com). Background: XRPL/Xahau data + form
 **Status / demo plan:**
 Verification + proof-anchoring primitives already built and tested. 90-day plan: pet rules + NFToken integration → testnet pet living/aging/dying on real ledger hashes → the "Verify my pet" panel → public adopt/share launch + traction metrics.
 
-**Links:** kairovault.com · (repo + live testnet demo to be added) · contact: @Cryptocrazy / daner3@gmail.com
+**Links:** kairovault.com · (repo + live testnet demo to be added) · contact: @Cryptocrazy589 / daner3@gmail.com
 
 ---
 
