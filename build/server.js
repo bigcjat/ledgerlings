@@ -24,6 +24,9 @@ const TAXON = 7777, TF_MUTABLE_TRANSFERABLE = 8 | 16;
 const ROYALTY_BPS = 5000;
 // Collaborator accessories/backgrounds: separate taxon, transferable (royalty), not mutable.
 const ACCESSORY_TAXON = 7778, TF_TRANSFERABLE = 8;
+// Bring-your-character registrations (NFT projects adding a playable skin): own taxon. The roster is
+// just "all issuer NFTs at this taxon" — persistent on-ledger, no database needed.
+const CHARACTER_TAXON = 7779;
 
 const hex = s => Buffer.from(s, 'utf8').toString('hex').toUpperCase();
 const unhex = h => Buffer.from(h, 'hex').toString('utf8');
@@ -193,6 +196,42 @@ app.post('/mint-accessory', async (req, res) => {
       return { result: r.meta.TransactionResult, nid: r.meta.nftoken_id, meta };
     });
     res.json(out);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// register-character: an NFT project adds their character as a playable Ledgerlings skin (per
+// CHARACTER_TEMPLATE.md). Mints a registration NFT (taxon=CHARACTER_TAXON) anchoring creator + name +
+// collection + art hash + a hash of the anchor map; 5% royalty. The character runs the SHARED rules
+// engine — registration is attribution + roster membership, not game logic.
+app.post('/register-character', async (req, res) => {
+  const { creator, name, collection, sha256, anchorsHash } = req.body || {};
+  if (!creator || !name || !sha256) return res.status(400).json({ error: 'creator, name, sha256 required' });
+  try {
+    const out = await withClient(async (c, w) => {
+      const meta = { t: 'char', n: String(name).slice(0, 32), a: String(creator).slice(0, 32),
+        col: String(collection || '').slice(0, 32), h: String(sha256).slice(0, 64),
+        x: String(anchorsHash || '').slice(0, 16), r: ROYALTY_BPS };
+      if (Buffer.byteLength(JSON.stringify(meta)) > 256) { meta.col = meta.col.slice(0, 16); meta.h = meta.h.slice(0, 32); }
+      const prepared = await c.autofill({ TransactionType: 'NFTokenMint', Account: w.classicAddress,
+        NFTokenTaxon: CHARACTER_TAXON, Flags: TF_TRANSFERABLE, TransferFee: ROYALTY_BPS, URI: hex(JSON.stringify(meta)) });
+      const r = (await c.submitAndWait(w.sign(prepared).tx_blob)).result;
+      return { result: r.meta.TransactionResult, nid: r.meta.nftoken_id, meta };
+    });
+    res.json(out);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// roster: every registered character (= issuer NFTs at CHARACTER_TAXON). Persistent on-ledger, no DB.
+app.get('/roster', async (req, res) => {
+  try {
+    const out = await withClient(async (c, w) => {
+      const r = await c.request({ command: 'account_nfts', account: w.classicAddress, limit: 400 });
+      return r.result.account_nfts
+        .filter(n => n.NFTokenTaxon === CHARACTER_TAXON && n.URI)
+        .map(n => { try { return { nid: n.NFTokenID, ...JSON.parse(unhex(n.URI)) }; } catch { return null; } })
+        .filter(Boolean);
+    });
+    res.json({ characters: out });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
