@@ -1,0 +1,1 @@
+{ "stages": ["egg","baby","teen","adult","elder"], "files": { "0":"egg.png","1":"baby.png","2":"teen.png","3":"adult.png","4":"elder.png" }, "base": "image-4 bear", "note": "stage index from pet_rules.step() -> sprite" }
