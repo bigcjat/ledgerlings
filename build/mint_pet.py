@@ -21,8 +21,13 @@ from xrpl.utils import str_to_hex, hex_to_str
 TESTNET = "https://s.altnet.rippletest.net:51234"
 
 # NFTokenMint flags (raw ints — robust across xrpl-py versions)
-TF_TRANSFERABLE = 8      # pets can be gifted/traded
+TF_TRANSFERABLE = 8      # pets can be gifted/traded (REQUIRED for TransferFee/royalty)
 TF_MUTABLE = 16          # REQUIRED — lets the issuer NFTokenModify the URI (Dynamic NFT)
+
+# Royalty: native XRPL TransferFee, auto-paid to the issuer on every on-ledger secondary sale.
+# Units: 0–50000 = 0.000%–50.000% in 0.001% steps. 5000 = 5.000%.
+# FINALIZED default = 5%; Dane confirms the final number (business decision).
+ROYALTY_BPS = 5000
 
 
 def pet_state(**overrides):
@@ -68,6 +73,7 @@ def main():
         account=issuer.classic_address,
         nftoken_taxon=7777,                       # the Ledgerlings collection taxon
         flags=TF_TRANSFERABLE | TF_MUTABLE,
+        transfer_fee=ROYALTY_BPS,                 # 5% royalty to issuer on every secondary sale
         uri=uri_hex(init),
     )
     r = submit_and_wait(mint, client, issuer)

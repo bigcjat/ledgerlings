@@ -26,7 +26,7 @@ const hex = s => Buffer.from(s, 'utf8').toString('hex').toUpperCase();
   const mint = async () => {
     const now = (await c.request({ command: 'ledger', ledger_index: 'validated' })).result.ledger_index;
     const r = await signAs(w, { TransactionType: 'NFTokenMint', Account: ISSUER, NFTokenTaxon: S.TAXON,
-      Flags: S.TF_MUTABLE_TRANSFERABLE, URI: S.enc(S.R.genesis(now, OWNER)) });
+      Flags: S.TF_MUTABLE_TRANSFERABLE, TransferFee: S.ROYALTY_BPS, URI: S.enc(S.R.genesis(now, OWNER)) });
     return r.meta.nftoken_id;
   };
 

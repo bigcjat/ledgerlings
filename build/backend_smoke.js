@@ -27,7 +27,7 @@ const ENDPOINT = 'wss://s.altnet.rippletest.net:51233';
   const mint = await S.withClient(async (c, w) => {
     const now = (await c.request({ command: 'ledger', ledger_index: 'validated' })).result.ledger_index;
     const r = await S.submit(c, w, { TransactionType: 'NFTokenMint', Account: w.classicAddress,
-      NFTokenTaxon: S.TAXON, Flags: S.TF_MUTABLE_TRANSFERABLE, URI: S.enc(S.R.genesis(now, OWNER)) });
+      NFTokenTaxon: S.TAXON, Flags: S.TF_MUTABLE_TRANSFERABLE, TransferFee: S.ROYALTY_BPS, URI: S.enc(S.R.genesis(now, OWNER)) });
     const nfts = (await c.request({ command: 'account_nfts', account: w.classicAddress })).result.account_nfts;
     return { r, nid: nfts[nfts.length - 1].NFTokenID };
   });

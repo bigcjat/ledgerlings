@@ -18,6 +18,10 @@ const sdk = process.env.XAMAN_API_KEY ? new XummSdk(process.env.XAMAN_API_KEY, p
 const ENDPOINT = process.env.XRPL_ENDPOINT || 'wss://s.altnet.rippletest.net:51233';
 const ISSUER_SEED = process.env.LEDGERLINGS_ISSUER_SEED;
 const TAXON = 7777, TF_MUTABLE_TRANSFERABLE = 8 | 16;
+// Royalty: native XRPL TransferFee, auto-paid to the issuer on every secondary sale.
+// 0–50000 = 0.000%–50.000% (0.001% steps). 5000 = 5%. Requires tfTransferable (set above).
+// FINALIZED default = 5%; Dane confirms the final business number.
+const ROYALTY_BPS = 5000;
 
 const hex = s => Buffer.from(s, 'utf8').toString('hex').toUpperCase();
 const unhex = h => Buffer.from(h, 'hex').toString('utf8');
@@ -68,7 +72,7 @@ app.post('/adopt', async (req, res) => {
     const now = (await c.request({ command: 'ledger', ledger_index: 'validated' })).result.ledger_index;
     // take the nid from the mint's meta.nftoken_id (robust — last-NFT is wrong once one issuer holds many pets)
     const prepared = await c.autofill({ TransactionType: 'NFTokenMint', Account: w.classicAddress,
-      NFTokenTaxon: TAXON, Flags: TF_MUTABLE_TRANSFERABLE, URI: enc(R.genesis(now, owner)) });
+      NFTokenTaxon: TAXON, Flags: TF_MUTABLE_TRANSFERABLE, TransferFee: ROYALTY_BPS, URI: enc(R.genesis(now, owner)) });
     const res = (await c.submitAndWait(w.sign(prepared).tx_blob)).result;
     return { result: res.meta.TransactionResult, nid: res.meta.nftoken_id, state: R.genesis(now, owner) };
   });
@@ -162,7 +166,7 @@ app.post('/interact', async (req, res) => {
 });
 
 // export the issuer primitives so a harness can drive the logic without starting a server.
-module.exports = { app, withClient, readState, submit, verifyPet, replay, enc, dec, hex, unhex, R, TAXON, TF_MUTABLE_TRANSFERABLE, ENDPOINT };
+module.exports = { app, withClient, readState, submit, verifyPet, replay, enc, dec, hex, unhex, R, TAXON, TF_MUTABLE_TRANSFERABLE, ROYALTY_BPS, ENDPOINT };
 
 if (require.main === module) {
   const PORT = process.env.PORT || 8788;
