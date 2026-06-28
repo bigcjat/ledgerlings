@@ -215,21 +215,50 @@ app.post('/mint-accessory', requireAdmin, async (req, res) => {
 // CHARACTER_TEMPLATE.md). Mints a registration NFT (taxon=CHARACTER_TAXON) anchoring creator + name +
 // collection + art hash + a hash of the anchor map; 5% royalty. The character runs the SHARED rules
 // engine — registration is attribution + roster membership, not game logic.
+// AUTHORIZED MINTING: if `creatorAddress` (a valid XRPL r-address) is supplied, we mint with
+// Issuer = that address, so the on-ledger TransferFee (resale royalty) routes to the CREATOR, not the
+// platform. Precondition: the creator must first authorize our issuer as their NFTokenMinter (one-time
+// AccountSet — see GET /minter-info). Without creatorAddress we fall back to a platform-issuer mint
+// (royalty supports the project). This is the partition model: characters → creator royalty.
 app.post('/register-character', requireAdmin, async (req, res) => {
-  const { creator, name, collection, sha256, anchorsHash } = req.body || {};
+  const { creator, name, collection, sha256, anchorsHash, creatorAddress } = req.body || {};
   if (!creator || !name || !sha256) return res.status(400).json({ error: 'creator, name, sha256 required' });
+  if (creatorAddress && !xrpl.isValidClassicAddress(creatorAddress))
+    return res.status(400).json({ error: 'creatorAddress is not a valid XRPL r-address' });
+  const authorized = Boolean(creatorAddress);
   try {
     const out = await withClient(async (c, w) => {
       const meta = { t: 'char', n: String(name).slice(0, 32), a: String(creator).slice(0, 32),
         col: String(collection || '').slice(0, 32), h: String(sha256).slice(0, 64),
         x: String(anchorsHash || '').slice(0, 16), r: ROYALTY_BPS };
+      if (authorized) meta.iss = creatorAddress;                 // royalty recipient (the creator)
       if (Buffer.byteLength(JSON.stringify(meta)) > 256) { meta.col = meta.col.slice(0, 16); meta.h = meta.h.slice(0, 32); }
-      const prepared = await c.autofill({ TransactionType: 'NFTokenMint', Account: w.classicAddress,
-        NFTokenTaxon: CHARACTER_TAXON, Flags: TF_TRANSFERABLE, TransferFee: ROYALTY_BPS, URI: hex(JSON.stringify(meta)) });
-      const r = (await c.submitAndWait(w.sign(prepared).tx_blob)).result;
-      return { result: r.meta.TransactionResult, nid: r.meta.nftoken_id, meta };
+      const tx = { TransactionType: 'NFTokenMint', Account: w.classicAddress,
+        NFTokenTaxon: CHARACTER_TAXON, Flags: TF_TRANSFERABLE, TransferFee: ROYALTY_BPS, URI: hex(JSON.stringify(meta)) };
+      if (authorized) tx.Issuer = creatorAddress;                // authorized mint: TransferFee → creator
+      const r = (await c.submitAndWait(w.sign(await c.autofill(tx)).tx_blob)).result;
+      return { result: r.meta.TransactionResult, nid: r.meta.nftoken_id, meta,
+        royaltyTo: authorized ? 'creator' : 'project',
+        royaltyRecipient: authorized ? creatorAddress : w.classicAddress };
     });
+    // authorized mint fails closed if the creator hasn't authorized us as their NFTokenMinter yet
+    if (authorized && out.result === 'tecNO_PERMISSION') {
+      const ourIssuer = await withClient(async (c, w) => w.classicAddress);
+      return res.status(409).json({ error: 'authorized-mint not permitted yet', result: out.result, ourIssuer,
+        fix: `Creator ${creatorAddress} must first run an AccountSet (from their own wallet) with SetFlag 10 (asfAuthorizedNFTokenMinter) and NFTokenMinter = ${ourIssuer}, then retry. See GET /minter-info.` });
+    }
     res.json(out);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// minter-info: the one-time AccountSet a creator runs (from THEIR wallet) to authorize Ledgerlings to
+// mint as them — so their character's resale royalty routes to THEM. Then register with creatorAddress.
+app.get('/minter-info', async (req, res) => {
+  try {
+    const ourIssuer = await withClient(async (c, w) => w.classicAddress);
+    res.json({ ourIssuer,
+      instructions: 'From your own wallet, submit the accountSet below (one-time). Then POST /register-character with creatorAddress = your address. Your 5% resale royalty will route to you.',
+      accountSet: { TransactionType: 'AccountSet', SetFlag: 10, NFTokenMinter: ourIssuer } });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 

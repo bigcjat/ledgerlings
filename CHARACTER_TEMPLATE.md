@@ -16,6 +16,9 @@ behalf; the NFT's `Issuer` is your address, so the 5% `TransferFee` pays you, no
 1. **Character art** to the template below (PNG, transparent background).
 2. A **manifest** (JSON) describing your character + where accessories attach.
 3. Your **creator handle + collection name** (for attribution + royalty).
+4. Your **XRPL address** (the royalty recipient) + a **one-time authorization** so we can mint *as you*:
+   `GET /minter-info` returns the exact `AccountSet` (`SetFlag` 10 + `NFTokenMinter` = our issuer). Run it
+   once from your own wallet, then your character's 5% resale royalty routes to **you** (verified on testnet).
 
 ## 2. Art template (so accessories from anyone line up)
 - **Canvas:** 1024 × 1024 px, **transparent** background.
