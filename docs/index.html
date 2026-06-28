@@ -1,0 +1,340 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>Ledgerlings</title>
+<style>
+  :root{--ink:#0B1B2B;--base:#1E8A9C;--glow:#19C3E6;--hot:#6FF0FF;--blush:#E86A8A;--grey:#9AA8B0}
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent;user-select:none;font-family:ui-monospace,Menlo,monospace}
+  html,body{margin:0;height:100%;background:radial-gradient(120% 80% at 50% 25%,#0e3a4a,#0b1b2b 75%);color:#dff;overflow:hidden}
+  #app{max-width:420px;margin:0 auto;height:100%;display:flex;flex-direction:column;padding:14px;gap:10px}
+  #top{display:flex;justify-content:space-between;align-items:center;font-size:13px;opacity:.9}
+  #top b{color:var(--hot)}
+  #moodBadge{font-size:13px;cursor:pointer;padding:2px 8px;border-radius:12px;background:#0e3a4a;
+    border:1px solid #1c5a6b;white-space:nowrap}#moodBadge:active{transform:translateY(1px)}
+  #moodBadge.stale{opacity:.55}
+  #stage{position:relative;flex:1;display:flex;align-items:center;justify-content:center}
+  canvas{image-rendering:pixelated}
+  #bars{display:flex;flex-direction:column;gap:7px}
+  .bar{display:flex;align-items:center;gap:8px;font-size:12px}
+  .bar span{width:62px;opacity:.85}
+  .track{flex:1;height:9px;border-radius:5px;background:#0e3a4a;overflow:hidden;border:1px solid #1c5}
+  .fill{height:100%;transition:width .3s}
+  #acts{display:grid;grid-template-columns:repeat(5,1fr);gap:8px}
+  .btn{padding:11px 0;border:0;border-radius:12px;background:#12586b;color:#dff;font-size:20px;cursor:pointer;
+    box-shadow:0 3px 0 #0a3a48}.btn:active{transform:translateY(2px);box-shadow:0 1px 0 #0a3a48}
+  .btn small{display:block;font-size:9px;opacity:.7;margin-top:2px}
+  #verify{padding:9px;border:1px solid var(--glow);border-radius:10px;background:#0e3a4a;color:var(--hot);
+    font-size:12px;cursor:pointer;text-align:center}
+  #foot{font-size:10px;opacity:.55;text-align:center}
+  /* overlays */
+  .overlay{position:fixed;inset:0;background:rgba(11,27,43,.92);display:none;flex-direction:column;
+    align-items:center;justify-content:center;gap:14px;padding:18px;z-index:9}
+  .overlay.on{display:flex}
+  #combo{height:24px;font-size:22px;font-weight:700;color:var(--hot);text-shadow:0 0 12px var(--glow)}
+  .x{position:absolute;top:14px;right:18px;font-size:22px;cursor:pointer;opacity:.8}
+  .vline{font-size:13px;line-height:1.6;max-width:320px}
+  .ok{color:#6f6}.bad{color:#f88}
+  .toast{position:fixed;top:54px;left:50%;transform:translateX(-50%);background:#19c3e6;color:#0b1b2b;
+    padding:7px 16px;border-radius:20px;font-weight:700;font-size:13px;opacity:0;transition:opacity .25s;z-index:20}
+  .toast.on{opacity:1}
+</style>
+<!-- Xaman xApp wiring. Fill these in the xApp / deployment; empty = standalone local-demo mode. -->
+<script>window.XAMAN_API_KEY='';window.LEDGERLINGS_ISSUER='';window.LEDGERLINGS_BACKEND='';</script>
+<script src="https://xaman.app/assets/cdn/xumm.min.js"></script>
+<script src="pet_rules.js"></script>
+<script src="xaman_bridge.js"></script>
+<script src="market_mood.js"></script>
+</head>
+<body>
+<div id="app">
+  <div id="top"><div>🥚 <b id="name">Ledgerlings</b></div>
+    <div style="display:flex;align-items:center;gap:8px">
+      <div id="moodBadge" title="tap: verify the mood (its on-chain / off-chain source)">😌 <b id="moodPct" style="color:var(--hot)">·</b></div>
+      <div id="meta">egg · day 0</div>
+    </div></div>
+  <div id="stage"><canvas id="c" width="200" height="220"></canvas></div>
+  <div id="bars">
+    <div class="bar"><span>🍖 hunger</span><div class="track"><div id="bH" class="fill"></div></div></div>
+    <div class="bar"><span>😊 happy</span><div class="track"><div id="bP" class="fill"></div></div></div>
+    <div class="bar"><span>❤️ health</span><div class="track"><div id="bL" class="fill"></div></div></div>
+  </div>
+  <div id="acts">
+    <button class="btn" data-op="feed">🍎<small>feed</small></button>
+    <button class="btn" data-op="play">🎾<small>play</small></button>
+    <button class="btn" data-op="clean">🧼<small>clean</small></button>
+    <button class="btn" data-op="heal">💊<small>heal</small></button>
+    <button class="btn" id="danceBtn">💃<small>dance</small></button>
+  </div>
+  <div id="verify">🔎 Verify my pet — prove the game played fair</div>
+  <div id="foot">on XRPL · pet = a Dynamic NFT · every rule is open &amp; re-checkable</div>
+</div>
+
+<div class="overlay" id="dance">
+  <div class="x" data-close="dance">✕</div>
+  <div style="font-size:13px;opacity:.8">tap the screen on the beat · happiness +bounded</div>
+  <div id="combo"></div>
+  <canvas id="dc" width="220" height="220"></canvas>
+  <div style="font-size:12px">SCORE <b id="dscore" style="color:var(--hot)">0</b> · COMBO <b id="dcombo" style="color:var(--hot)">0</b> · +HAPPY <b id="dhappy" style="color:var(--hot)">0</b>/10</div>
+</div>
+
+<div class="overlay" id="vov">
+  <div class="x" data-close="vov">✕</div>
+  <div style="font-size:16px;font-weight:700;color:var(--hot)">Verify my pet</div>
+  <div class="vline" id="vbody"></div>
+</div>
+
+<div class="overlay" id="mov">
+  <div class="x" data-close="mov">✕</div>
+  <div style="font-size:16px;font-weight:700;color:var(--hot)">Verify the mood</div>
+  <div class="vline" id="mbody"></div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+// ── rules engine: SINGLE source of truth = pet_rules.js (proven ≡ pet_rules.py by diff_rules.js).
+// No inline copy — the app, the issuer (server.js) and the replay verifier run the EXACT same step(). ──
+const { DAY, DECAY, RESTORE, COOLDOWN, LIFESPAN, STAGE_AGE, clamp,
+        EGG, BABY, TEEN, ADULT, ELDER, PASSED,
+        STAGE, FORM, FEED, PLAY, CLEAN, HEAL, genesis, step, stageForAge, evolve } = PetRules;
+
+// ── demo clock: advances "now" with real time so the pet visibly lives/ages ──
+const DEMO_LPS=120;                       // ledgers/sec in the demo (a "day" ~ 3 min)
+let OWNER='rDemoOwner', petNid=null, xamanReady=false;     // OWNER becomes the Xaman account in real mode
+let pet=genesis(0,OWNER), now0=performance.now(), nowLedger=()=> Math.floor((performance.now()-now0)/1000*DEMO_LPS);
+
+// ── the same procedural pet (mood-aware) ──
+const INK='#0B1B2B',SHA='#0E3A4A',BASE='#1E8A9C',LGT='#3FB6C4',HI='#7FE0E6',GLOW='#19C3E6',HOT='#6FF0FF',
+      WHT='#E8FFFF',EYEW='#F2FBFC',BLUSH='#E86A8A',GREY='#9AA8B0';
+function rr(X,x,y,w,h,r){X.beginPath();X.moveTo(x+r,y);X.arcTo(x+w,y,x+w,y+h,r);X.arcTo(x+w,y+h,x,y+h,r);
+  X.arcTo(x,y+h,x,y,r);X.arcTo(x,y,x+w,y,r);X.closePath();}
+// market-mood -> render params (COSMETIC ONLY; never reads/writes pet care-state)
+// returns aura ring color (direction), core hue (magnitude/brightness mult),
+// and idle-motion modifiers (variant). Safe defaults => neutral 'calm' look.
+function moodFx(mkt){
+  const m=(mkt&&!mkt.stale)?mkt.mood:'calm', d=(mkt&&!mkt.stale)?mkt.dPct:0;
+  const mag=Math.min(1,Math.abs(d)/6);                 // 0..1 by magnitude
+  // aura: green/cyan up, blue-grey down, amber-flicker dizzy, neutral calm
+  let aura='rgba(111,240,255,0)', coreMul=1, hueShift=null;
+  switch(m){
+    case 'euphoric': aura='rgba(111,255,200,0.55)'; coreMul=1.6+0.4*mag; hueShift='cyanwhite'; break;
+    case 'happy':    aura='rgba(120,240,180,0.40)'; coreMul=1.25+0.2*mag; break;
+    case 'calm':     aura='rgba(120,200,220,0.18)'; coreMul=1.0; break;
+    case 'worried':  aura='rgba(120,150,200,0.40)'; coreMul=0.7; hueShift='blue'; break;
+    case 'scared':   aura='rgba(80,110,170,0.55)';  coreMul=0.45; hueShift='deepblue'; break;
+    case 'dizzy':    aura='rgba(230,180,120,0.45)'; coreMul=1.0; hueShift='flicker'; break;
+  }
+  return {m,d,mag,aura,coreMul,hueShift};
+}
+function drawPet(X,cx,cy,bounce,squash,coreGlow,mood,mkt){
+  const dead=pet.alive===0, sad=mood==='sad', big=0.6+0.12*pet.stage;
+  const fx=moodFx(mkt);
+  // idle-animation variant by market mood (cosmetic motion only)
+  const t2=performance.now()/1000;
+  let mBounce=0, mWob=0, mSpin=0;
+  if(!dead){
+    if(fx.m==='euphoric') mBounce=2.5+1.5*Math.abs(Math.sin(t2*3));
+    else if(fx.m==='scared') mWob=Math.sin(t2*22)*1.4;          // tremble
+    else if(fx.m==='worried') mBounce=-1.5;                      // slight droop
+    else if(fx.m==='dizzy'){ mWob=Math.sin(t2*9)*1.2; mSpin=Math.sin(t2*1.8)*0.08; }
+  }
+  const w=70*big*(1+squash*0.18), h=78*big*(1-squash*0.14);
+  // AURA RING — drawn behind the pet; direction=color, magnitude=size/alpha
+  if(!dead && fx.aura!=='rgba(111,240,255,0)'){
+    const ar=(w*0.62)*(1+0.18*fx.mag) + (fx.m==='dizzy'?4*Math.abs(Math.sin(t2*7)):0);
+    const ag=X.createRadialGradient(cx,cy-bounce+8,ar*0.55,cx,cy-bounce+8,ar*1.25);
+    ag.addColorStop(0,'rgba(0,0,0,0)'); ag.addColorStop(0.7,fx.aura); ag.addColorStop(1,'rgba(0,0,0,0)');
+    X.save();X.fillStyle=ag;X.beginPath();X.arc(cx,cy-bounce+8,ar*1.25,0,6.28);X.fill();X.restore();
+  }
+  X.save(); X.translate(cx+mWob,cy-bounce-mBounce); if(mSpin) X.rotate(mSpin);
+  const top= dead?GREY:HI, mid= sad?'#5A7A82':BASE, lo= sad?'#3A555E':SHA;
+  const g=X.createLinearGradient(0,-h/2,0,h/2); g.addColorStop(0,top);g.addColorStop(.25,sad?'#7896A0':LGT);
+  g.addColorStop(.6,mid);g.addColorStop(1,lo);
+  X.fillStyle=g;X.strokeStyle=INK;X.lineWidth=4; rr(X,-w/2,-h/2,w,h,26*big);X.fill();X.stroke();
+  if(!dead){X.fillStyle=HI;X.beginPath();X.ellipse(-w*0.2,-h*0.28,12*big,7*big,0,0,6.28);X.fill();}
+  X.fillStyle=sad?GREY:BLUSH;X.beginPath();X.ellipse(-w*0.38,4,5,4,0,0,6.28);X.ellipse(w*0.38,4,5,4,0,0,6.28);X.fill();
+  // eyes by mood
+  for(const ex of [-16*big,16*big]){
+    if(mood==='happy'){X.strokeStyle=INK;X.lineWidth=3;X.beginPath();X.arc(ex,-8,6,Math.PI*1.1,Math.PI*1.9);X.stroke();}
+    else if(dead){X.strokeStyle=INK;X.lineWidth=3;X.beginPath();X.moveTo(ex-4,-12);X.lineTo(ex+4,-6);X.moveTo(ex+4,-12);X.lineTo(ex-4,-6);X.stroke();}
+    else{X.fillStyle=INK;X.beginPath();X.ellipse(ex,-9+(sad?2:0),7,9,0,0,6.28);X.fill();
+      X.fillStyle=EYEW;X.beginPath();X.ellipse(ex-2,-13,2.6,2.6,0,0,6.28);X.fill();
+      X.fillStyle=GLOW;X.beginPath();X.ellipse(ex+3,-5,1.5,1.5,0,0,6.28);X.fill();}
+  }
+  // PROOF-CORE — glows even when sad/dead (the proof never lies).
+  // Market mood ONLY tints/brightens the cosmetic glow (coreMul + hueShift).
+  let cMul=fx.coreMul, flick=1;
+  if(fx.hueShift==='flicker') flick=0.6+0.4*Math.abs(Math.sin(t2*14)); // dizzy
+  const r=(8+coreGlow*7*cMul*flick)*big, cg=X.createRadialGradient(0,18,0,0,18,r*1.8);
+  // direction/magnitude hue: brighter cyan-white up, deep blue down
+  let c0=WHT,c1=HOT,c2=GLOW;
+  if(fx.hueShift==='cyanwhite'){c0='#FFFFFF';c1='#9FFFF6';c2='#39E6FF';}
+  else if(fx.hueShift==='blue'){c0='#CFE6FF';c1='#6FB0F0';c2='#3C78D0';}
+  else if(fx.hueShift==='deepblue'){c0='#9FC0F0';c1='#4F78C0';c2='#2A4FA0';}
+  cg.addColorStop(0,c0);cg.addColorStop(.3,c1);cg.addColorStop(.7,c2);cg.addColorStop(1,'rgba(25,195,230,0)');
+  X.fillStyle=cg;X.beginPath();X.arc(0,18,r*1.8,0,6.28);X.fill();
+  X.fillStyle=c1;X.beginPath();X.moveTo(0,18-r*.7);X.lineTo(r*.7,18);X.lineTo(0,18+r*.7);X.lineTo(-r*.7,18);X.closePath();X.fill();
+  X.restore();
+}
+function mood(){ if(pet.alive===0)return'dead'; if(pet.health<35||pet.hunger<20||pet.happiness<20)return'sad';
+  if(performance.now()-lastJoy<700)return'happy'; return'idle'; }
+
+// ── main render loop ──
+const C=document.getElementById('c'),X=C.getContext('2d');
+let lastJoy=-1e9;
+function tick(){
+  requestAnimationFrame(tick);
+  // live decay: re-derive state from the advancing clock (cheap; re-applies decay via a no-op step)
+  pet=step(pet,0,nowLedger(),OWNER);          // op 0 = pure decay/age/death pass
+  X.clearRect(0,0,200,220);
+  const t=performance.now()/1000, bp=Math.abs(Math.sin(t*2.2));
+  const mkt=(window.MarketMood?MarketMood.get():null);
+  drawPet(X,100,120,bp*5,(1-bp)*0.2,0.25+0.25*bp,mood(),mkt);
+  updateMoodBadge(mkt);
+  // hud
+  document.getElementById('bH').style.width=pet.hunger+'%';
+  document.getElementById('bP').style.width=pet.happiness+'%';
+  document.getElementById('bL').style.width=pet.health+'%';
+  document.getElementById('bH').style.background=pet.hunger<25?GREY:'linear-gradient(90deg,#e8a06a,#f0c06f)';
+  document.getElementById('bP').style.background=pet.happiness<25?GREY:'linear-gradient(90deg,#6ad0e6,#6ff0ff)';
+  document.getElementById('bL').style.background=pet.health<25?'#f88':'linear-gradient(90deg,#e86a8a,#ff9ab0)';
+  const icon=['🥚','🐣','🐥','🐲','🦕','💀'][pet.stage];
+  document.getElementById('name').textContent='Ledgerlings';
+  document.querySelector('#top div').firstChild.textContent=icon+' ';
+  document.getElementById('meta').textContent=
+    (pet.alive?STAGE[pet.stage]:'gone ('+(pet.death_cause===2?'old age':'neglect')+')')
+    +' · day '+Math.floor(pet.age/DAY)+(pet.form?' · '+FORM[pet.form]:'');
+}
+tick();
+
+function toast(m){const e=document.getElementById('toast');e.textContent=m;e.classList.add('on');setTimeout(()=>e.classList.remove('on'),1100);}
+
+// ── Market Mood HUD badge (emoji + Δ%) — cosmetic, never touches care-state ──
+function updateMoodBadge(mkt){
+  const b=document.getElementById('moodBadge'), p=document.getElementById('moodPct');
+  if(!b) return;
+  if(!mkt){ b.firstChild.textContent='😌 '; p.textContent='·'; return; }
+  const em=MarketMood.emoji(mkt.mood);
+  b.firstChild.textContent=em+' ';
+  if(mkt.stale || mkt.price===null){ p.textContent='—'; b.classList.add('stale'); }
+  else { const d=mkt.dPct; p.textContent=(d>=0?'+':'')+d.toFixed(2)+'%'; b.classList.remove('stale'); }
+}
+document.getElementById('moodBadge').onclick=()=>{
+  open('mov');
+  const mkt=window.MarketMood?MarketMood.get():null;
+  const body=document.getElementById('mbody');
+  if(!mkt || mkt.price===null){
+    body.innerHTML=`<span class="bad">No live price yet.</span><br><br>`+
+      `The price feed hasn't returned a reading (offline, blocked, or still starting). `+
+      `The pet falls back to <b>😌 calm</b> and the mood overlay shows nothing it can't prove.`;
+    return;
+  }
+  const src=mkt.source||'unknown';
+  const ageS=mkt.updated?Math.max(0,Math.round((Date.now()-mkt.updated)/1000)):'?';
+  let srcLine, head;
+  if(mkt.onLedger && mkt.oracle){
+    head=`Mood from the <b>XRPL Price Oracle</b> — verifiable on-chain.`;
+    srcLine=`Oracle <b>${mkt.oracle.account}</b>#${mkt.oracle.docId}`+
+            (mkt.oracle.ledger?` · as of ledger <b>${mkt.oracle.ledger}</b>`:'')+`.`;
+  } else {
+    head=`Mood from an <b>off-chain</b> price source (honest label — this is NOT the on-ledger oracle yet).`;
+    srcLine=`Source: <b>${src}</b>. The on-ledger XRPL Price Oracle path is stubbed (readOnLedgerOracle) `+
+            `and swaps in the moment a live XRP/USD oracle account+doc-id is identified.`;
+  }
+  body.innerHTML=
+    `${head}<br><br>`+
+    `XRP/USD = <b>$${mkt.price.toFixed(4)}</b> · short-term Δ <b>${(mkt.dPct>=0?'+':'')+mkt.dPct.toFixed(2)}%</b> `+
+    `→ mood <b>${MarketMood.emoji(mkt.mood)} ${mkt.mood}</b>.<br><br>`+
+    `${srcLine}<br>`+
+    `<span style="opacity:.7">read ${ageS}s ago${mkt.stale?' · ⚠ stale':''}</span><br><br>`+
+    `<span style="opacity:.6">Market mood is <b>cosmetic + ephemeral</b>. It changes only the aura, core hue `+
+    `and idle animation — it never touches the fair care-state or the replay verifier.</span>`;
+};
+
+// ── interactions (local demo = apply rules now; PRODUCTION = sign a Payment+memo via Xaman, issuer modifies the dNFT) ──
+const OPNUM={feed:FEED,play:PLAY,clean:CLEAN,heal:HEAL};
+document.querySelectorAll('[data-op]').forEach(b=>b.onclick=async ()=>{
+  const op=b.dataset.op, before=JSON.stringify(pet);
+  if(xamanReady){                                          // REAL: sign a Payment+memo in Xaman; issuer applies the rules + NFTokenModify
+    const r=await XamanBridge.interact(op,petNid);
+    if(r.local){ /* fell back */ } else if(!r.signed){ toast('cancelled'); return; }
+    else { const live=petNid && await XamanBridge.fetchPet(petNid); if(live) pet=live; toast(op+' signed! 💖'); lastJoy=performance.now(); return; }
+  }
+  pet=step(pet,OPNUM[op],nowLedger(),OWNER);               // LOCAL demo (no Xaman / standalone)
+  if(JSON.stringify(pet)!==before){lastJoy=performance.now();toast(op+'! 💖');}
+});
+
+// boot: in a Xaman xApp, resolve the user + load/adopt a real on-ledger pet; else stay in local demo
+(async()=>{
+  xamanReady=await XamanBridge.init();
+  if(xamanReady){ OWNER=XamanBridge.account;
+    const a=await XamanBridge.adopt();                     // mints (or returns) the user's pet dNFT
+    if(a&&a.nid){ petNid=a.nid; if(a.state) pet=a.state; }
+    toast('connected: '+OWNER.slice(0,8)+'…');
+  }
+})();
+
+// ── Xaman xApp wiring is REAL and lives in xaman_bridge.js (init/interact/adopt/fetchPet). ──
+// Flow: tap → XamanBridge.interact(op) signs a Payment+memo in Xaman → the issuer backend
+// (server.js) parses the memo, runs pet_rules.step(), and NFTokenModifies the dNFT (interaction.py)
+// → the app re-reads authoritative state via XamanBridge.fetchPet(nid). No-SDK/no-key → local demo.
+// Config (set before xaman_bridge.js loads): window.XAMAN_API_KEY / LEDGERLINGS_ISSUER / LEDGERLINGS_BACKEND.
+
+// ── DANCE mini-game (tap-to-beat; awards BOUNDED happiness on close) ──
+const DC=document.getElementById('dc'),DX=DC.getContext('2d');
+let dRun=false,dT0=0,dBpm=120,dBeat=500,dScore=0,dCombo=0,dBest=0,dHappy=0,dLastHit=-1e9,dParts=[];
+document.getElementById('danceBtn').onclick=()=>{open('dance');dRun=true;dT0=performance.now();dScore=dCombo=dHappy=0;};
+function dTap(){ if(!dRun)return; const ph=((performance.now()-dT0)%dBeat+dBeat)%dBeat, e=Math.min(ph,dBeat-ph);
+  let col; if(e<70){dCombo++;dScore+=3;col=HOT;} else if(e<140){dCombo++;dScore+=1;col=GLOW;} else {dCombo=0;col=GREY;}
+  dBest=Math.max(dBest,dCombo); if(e<140){dLastHit=performance.now(); if(dCombo%4===0)dHappy=Math.min(10,dHappy+1);
+    for(let i=0;i<8;i++){const a=Math.random()*6.28,s=1+Math.random()*3;dParts.push({x:110,y:120,vx:Math.cos(a)*s,vy:Math.sin(a)*s-1,l:1,c:col});}}
+  document.getElementById('combo').textContent=(dCombo>1?dCombo+'x':'')+(e<70?' PERFECT':e<140?' GOOD':' MISS');
+  document.getElementById('dscore').textContent=dScore;document.getElementById('dcombo').textContent=dBest;
+  document.getElementById('dhappy').textContent=dHappy;
+}
+function dLoop(){ requestAnimationFrame(dLoop); if(!document.getElementById('dance').classList.contains('on'))return;
+  DX.clearRect(0,0,220,220); const tt=performance.now()-dT0,ph=(tt%dBeat)/dBeat,bp=Math.abs(Math.sin(ph*Math.PI));
+  let b=bp*10,sq=(1-bp)*0.4,cg=0.2+0.6*Math.pow(1-ph,2); const since=performance.now()-dLastHit;
+  if(since<260){const k=1-since/260;b+=16*k;cg=Math.min(1,cg+0.5*k);}
+  DX.strokeStyle='rgba(111,240,255,'+(0.25+0.5*ph)+')';DX.lineWidth=2;DX.beginPath();DX.arc(110,118,Math.max(14,14+88*(1-ph)),0,6.28);DX.stroke();
+  drawPet(DX,110,118,b,sq,cg,since<260?'happy':'idle');
+  dParts=dParts.filter(p=>p.l>0);for(const p of dParts){p.x+=p.vx;p.y+=p.vy;p.vy+=0.15;p.l-=0.03;DX.globalAlpha=Math.max(0,p.l);DX.fillStyle=p.c;DX.fillRect(p.x,p.y,3,3);}DX.globalAlpha=1;
+}
+dLoop();
+document.getElementById('dance').addEventListener('pointerdown',e=>{if(e.target.dataset.close===undefined)dTap();});
+
+// ── Verify my pet — re-derive the pet from its on-ledger history (real verifier; local demo = trivially fair) ──
+document.getElementById('verify').onclick=async ()=>{
+  open('vov');
+  const intro=`The rules are open-source and the pet's whole state lives on-chain in a Dynamic NFT.<br><br>`+
+    `Anyone re-runs the rules over this pet's ledger history and checks it matches the on-ledger state — `+
+    `<b>you don't trust us, you check.</b><br><br>`;
+  const foot=`<br><br><span style="opacity:.6">Stats are cosmetic-safe; accessories can never touch the fair state.</span>`;
+  const V=document.getElementById('vbody');
+  if(!xamanReady||!petNid){ // standalone local demo: no on-ledger pet to replay
+    V.innerHTML=intro+`<span class="ok">✅ LOCAL DEMO — running the open rules in your browser; nothing on-ledger to dispute.</span>`+foot; return;
+  }
+  V.innerHTML=intro+`<span style="opacity:.7">Re-deriving from ledger history…</span>`;
+  const v=await XamanBridge.verify(petNid);
+  const pass=v&&v.verdict==='PASS';
+  const line = pass
+    ? `<span class="ok">✅ VERIFIED — all ${v.interactions} interactions reproduce from the open rules. The game played fair.</span>`
+    : (v&&v.verdict==='DIVERGED'
+        ? `<span class="bad">🚨 DIVERGED — the on-ledger state does NOT match a faithful replay. ${v.reason||''}</span>`
+        : `<span style="opacity:.7">Could not verify right now (${(v&&v.reason)||'no backend'}).</span>`);
+  V.innerHTML=intro+line+foot;
+};
+
+// overlay open/close
+function open(id){document.getElementById(id).classList.add('on');}
+document.querySelectorAll('[data-close]').forEach(x=>x.onclick=()=>{document.getElementById(x.dataset.close).classList.remove('on');if(x.dataset.close==='dance')dRun=false;});
+addEventListener('keydown',e=>{if(e.code==='Space'&&document.getElementById('dance').classList.contains('on')){e.preventDefault();dTap();}});
+
+// ── Market Mood: start polling the (off-chain fallback) XRP/USD price ──
+// Cosmetic overlay only. Degrades gracefully to 'calm'/stale if the fetch is blocked.
+if(window.MarketMood) MarketMood.start();
+</script>
+</body>
+</html>
