@@ -31,6 +31,9 @@ const CHARACTER_TAXON = 7779;
 // issuer. ALLOWED_ORIGIN locks CORS. Set both in the host env.
 const ADMIN_TOKEN = process.env.ADMIN_TOKEN || '';
 const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN || 'https://hugegreencandle.github.io';
+// Broker fee = platform's atomic cut on a PRIMARY sale (NFTokenBrokerFee), as bps of the list price.
+// Configurable — final business number TBD (Dane). 1000 = 10%. Artist keeps the price; platform keeps this.
+const BROKER_FEE_BPS = Number(process.env.BROKER_FEE_BPS || 1000);
 
 const hex = s => Buffer.from(s, 'utf8').toString('hex').toUpperCase();
 const unhex = h => Buffer.from(h, 'hex').toString('utf8');
@@ -273,6 +276,57 @@ app.get('/roster', async (req, res) => {
         .filter(Boolean);
     });
     res.json({ characters: out });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ---- P2: brokered primary sale (platform's atomic cut, no custody) ----
+// Flow: artist lists (sell offer, destination-locked to the platform broker) -> buyer offers price+brokerFee
+// (buy offer) -> platform NFTokenAcceptOffer matches both with NFTokenBrokerFee = the spread. Seller (artist)
+// receives buy.Amount - BrokerFee = the price; platform keeps the fee; buyer gets the NFT — atomic, no custody.
+// Artist must own the pet first (delivered post-mint). Offers returned UNSIGNED for Xaman signing.
+const brokerFeeDrops = priceDrops => String(Math.floor(Number(priceDrops) * BROKER_FEE_BPS / 10000));
+
+app.get('/broker-info', async (req, res) => {
+  try {
+    const broker = await withClient(async (c, w) => w.classicAddress);
+    res.json({ broker, brokerFeeBps: BROKER_FEE_BPS, royaltyBps: ROYALTY_BPS });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// artist lists a pet for primary sale -> UNSIGNED sell offer (artist signs via Xaman), locked to the broker.
+app.post('/list-pet', async (req, res) => {
+  const { artist, nftId, priceXrp } = req.body || {};
+  if (!artist || !nftId || !priceXrp) return res.status(400).json({ error: 'artist, nftId, priceXrp required' });
+  if (!xrpl.isValidClassicAddress(artist)) return res.status(400).json({ error: 'invalid artist address' });
+  try {
+    const broker = await withClient(async (c, w) => w.classicAddress);
+    const tx = { TransactionType: 'NFTokenCreateOffer', Account: artist, NFTokenID: nftId,
+      Amount: xrpl.xrpToDrops(priceXrp), Flags: 1 /* tfSellNFToken */, Destination: broker };
+    res.json({ unsignedTx: tx, signWith: 'artist (Xaman)', note: 'sell offer locked to the platform broker' });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// buyer offer for a listed pet -> UNSIGNED buy offer for price + broker fee (buyer signs via Xaman).
+app.post('/buy-pet', (req, res) => {
+  const { buyer, artist, nftId, priceXrp } = req.body || {};
+  if (!buyer || !artist || !nftId || !priceXrp) return res.status(400).json({ error: 'buyer, artist, nftId, priceXrp required' });
+  if (!xrpl.isValidClassicAddress(buyer) || !xrpl.isValidClassicAddress(artist))
+    return res.status(400).json({ error: 'invalid buyer/artist address' });
+  const priceDrops = xrpl.xrpToDrops(priceXrp);
+  const fee = brokerFeeDrops(priceDrops);
+  const total = String(Number(priceDrops) + Number(fee));
+  const tx = { TransactionType: 'NFTokenCreateOffer', Account: buyer, Owner: artist, NFTokenID: nftId, Amount: total };
+  res.json({ unsignedTx: tx, signWith: 'buyer (Xaman)', priceDrops, brokerFeeDrops: fee, totalDrops: total });
+});
+
+// platform matches a sell + buy offer, keeping NFTokenBrokerFee = the spread. Admin-signed, atomic, no custody.
+app.post('/broker-sale', requireAdmin, async (req, res) => {
+  const { sellOffer, buyOffer, brokerFeeDrops: fee } = req.body || {};
+  if (!sellOffer || !buyOffer || !fee) return res.status(400).json({ error: 'sellOffer, buyOffer, brokerFeeDrops required' });
+  try {
+    const result = await withClient((c, w) => submit(c, w, { TransactionType: 'NFTokenAcceptOffer',
+      Account: w.classicAddress, NFTokenSellOffer: sellOffer, NFTokenBuyOffer: buyOffer, NFTokenBrokerFee: String(fee) }));
+    res.json({ result });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
