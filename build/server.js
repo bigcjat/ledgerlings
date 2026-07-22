@@ -34,6 +34,12 @@ const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN || 'https://hugegreencandle.gi
 // Broker fee = platform's atomic cut on a PRIMARY sale (NFTokenBrokerFee), as bps of the list price.
 // Configurable — final business number TBD (Dane). 1000 = 10%. Artist keeps the price; platform keeps this.
 const BROKER_FEE_BPS = Number(process.env.BROKER_FEE_BPS || 1000);
+// Make Waves leaderboard attribution: stamp every project tx (issuer-signed AND user-signed offers)
+// with the hackathon SourceTag so on-chain activity + active accounts are credited to Ledgerlings.
+// Env-gated + non-breaking: unset => no SourceTag field, behaves exactly as before. Set MAKEWAVES_SOURCE_TAG.
+const SOURCE_TAG = Number.isInteger(Number(process.env.MAKEWAVES_SOURCE_TAG))
+  ? Number(process.env.MAKEWAVES_SOURCE_TAG) : undefined;
+const tag = tx => (SOURCE_TAG !== undefined && tx && tx.SourceTag === undefined ? { ...tx, SourceTag: SOURCE_TAG } : tx);
 
 const hex = s => Buffer.from(s, 'utf8').toString('hex').toUpperCase();
 const unhex = h => Buffer.from(h, 'hex').toString('utf8');
@@ -68,7 +74,7 @@ async function readState(c, issuer, nid) {
   return n ? dec(n.URI) : null;
 }
 async function submit(c, w, tx) {
-  const prepared = await c.autofill(tx);
+  const prepared = await c.autofill(tag(tx));
   const res = await c.submitAndWait(w.sign(prepared).tx_blob);
   return res.result.meta.TransactionResult;
 }
@@ -99,8 +105,8 @@ app.post('/adopt', requireAdmin, async (req, res) => {
   const out = await withClient(async (c, w) => {
     const now = (await c.request({ command: 'ledger', ledger_index: 'validated' })).result.ledger_index;
     // take the nid from the mint's meta.nftoken_id (robust — last-NFT is wrong once one issuer holds many pets)
-    const prepared = await c.autofill({ TransactionType: 'NFTokenMint', Account: w.classicAddress,
-      NFTokenTaxon: TAXON, Flags: TF_MUTABLE_TRANSFERABLE, TransferFee: ROYALTY_BPS, URI: enc(R.genesis(now, owner)) });
+    const prepared = await c.autofill(tag({ TransactionType: 'NFTokenMint', Account: w.classicAddress,
+      NFTokenTaxon: TAXON, Flags: TF_MUTABLE_TRANSFERABLE, TransferFee: ROYALTY_BPS, URI: enc(R.genesis(now, owner)) }));
     const res = (await c.submitAndWait(w.sign(prepared).tx_blob)).result;
     return { result: res.meta.TransactionResult, nid: res.meta.nftoken_id, state: R.genesis(now, owner) };
   });
@@ -205,8 +211,8 @@ app.post('/mint-accessory', requireAdmin, async (req, res) => {
       const meta = { t: 'acc', k: String(kind || 'accessory').slice(0, 12), n: String(name).slice(0, 40),
         a: String(artist).slice(0, 40), h: String(sha256).slice(0, 64), r: ROYALTY_BPS };
       if (Buffer.byteLength(JSON.stringify(meta)) > 256) meta.h = meta.h.slice(0, 32);  // keep URI <=256 bytes
-      const prepared = await c.autofill({ TransactionType: 'NFTokenMint', Account: w.classicAddress,
-        NFTokenTaxon: ACCESSORY_TAXON, Flags: TF_TRANSFERABLE, TransferFee: ROYALTY_BPS, URI: hex(JSON.stringify(meta)) });
+      const prepared = await c.autofill(tag({ TransactionType: 'NFTokenMint', Account: w.classicAddress,
+        NFTokenTaxon: ACCESSORY_TAXON, Flags: TF_TRANSFERABLE, TransferFee: ROYALTY_BPS, URI: hex(JSON.stringify(meta)) }));
       const r = (await c.submitAndWait(w.sign(prepared).tx_blob)).result;
       return { result: r.meta.TransactionResult, nid: r.meta.nftoken_id, meta };
     });
@@ -239,7 +245,7 @@ app.post('/register-character', requireAdmin, async (req, res) => {
       const tx = { TransactionType: 'NFTokenMint', Account: w.classicAddress,
         NFTokenTaxon: CHARACTER_TAXON, Flags: TF_TRANSFERABLE, TransferFee: ROYALTY_BPS, URI: hex(JSON.stringify(meta)) };
       if (authorized) tx.Issuer = creatorAddress;                // authorized mint: TransferFee → creator
-      const r = (await c.submitAndWait(w.sign(await c.autofill(tx)).tx_blob)).result;
+      const r = (await c.submitAndWait(w.sign(await c.autofill(tag(tx))).tx_blob)).result;
       return { result: r.meta.TransactionResult, nid: r.meta.nftoken_id, meta,
         royaltyTo: authorized ? 'creator' : 'project',
         royaltyRecipient: authorized ? creatorAddress : w.classicAddress };
@@ -300,8 +306,8 @@ app.post('/list-pet', async (req, res) => {
   if (!xrpl.isValidClassicAddress(artist)) return res.status(400).json({ error: 'invalid artist address' });
   try {
     const broker = await withClient(async (c, w) => w.classicAddress);
-    const tx = { TransactionType: 'NFTokenCreateOffer', Account: artist, NFTokenID: nftId,
-      Amount: xrpl.xrpToDrops(priceXrp), Flags: 1 /* tfSellNFToken */, Destination: broker };
+    const tx = tag({ TransactionType: 'NFTokenCreateOffer', Account: artist, NFTokenID: nftId,
+      Amount: xrpl.xrpToDrops(priceXrp), Flags: 1 /* tfSellNFToken */, Destination: broker });
     res.json({ unsignedTx: tx, signWith: 'artist (Xaman)', note: 'sell offer locked to the platform broker' });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -315,7 +321,7 @@ app.post('/buy-pet', (req, res) => {
   const priceDrops = xrpl.xrpToDrops(priceXrp);
   const fee = brokerFeeDrops(priceDrops);
   const total = String(Number(priceDrops) + Number(fee));
-  const tx = { TransactionType: 'NFTokenCreateOffer', Account: buyer, Owner: artist, NFTokenID: nftId, Amount: total };
+  const tx = tag({ TransactionType: 'NFTokenCreateOffer', Account: buyer, Owner: artist, NFTokenID: nftId, Amount: total });
   res.json({ unsignedTx: tx, signWith: 'buyer (Xaman)', priceDrops, brokerFeeDrops: fee, totalDrops: total });
 });
 
