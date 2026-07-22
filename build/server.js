@@ -5,7 +5,11 @@
  *
  * Setup (see XAMAN_SETUP.md):  npm install  ·  set env  ·  node server.js
  *   XAMAN_API_KEY, XAMAN_API_SECRET   (https://apps.xaman.dev)
- *   LEDGERLINGS_ISSUER_SEED            (the issuer wallet seed — mints + modifies; KEEP SECRET)
+ *   LEDGERLINGS_ISSUER_SEED            (the SIGNING seed — mints + modifies; KEEP SECRET. In the
+ *                                      RegularKey setup this is the REGULARKEY seed, NOT the master.)
+ *   ISSUER_ADDRESS                    (optional; the issuer account we act AS = the Account on every
+ *                                      tx. Set this to the ISSUER (master) address when the seed above
+ *                                      is a RegularKey. Unset => act as the seed's own account.)
  *   XRPL_ENDPOINT                     (default testnet)
  */
 const express = require('express');
@@ -17,6 +21,12 @@ const R = require('./pet_rules.js');
 const sdk = process.env.XAMAN_API_KEY ? new XummSdk(process.env.XAMAN_API_KEY, process.env.XAMAN_API_SECRET) : null;
 const ENDPOINT = process.env.XRPL_ENDPOINT || 'wss://s.altnet.rippletest.net:51233';
 const ISSUER_SEED = process.env.LEDGERLINGS_ISSUER_SEED;
+// RegularKey setup: sign with LEDGERLINGS_ISSUER_SEED (the RegularKey) but act AS the issuer account.
+// When ISSUER_ADDRESS is set we override the wallet's classicAddress so every tx Account + every
+// account_nfts/account_tx lookup targets the ISSUER, while signing still uses the RegularKey keypair
+// (the ledger accepts it because the issuer authorized that key via SetRegularKey). Unset => the wallet
+// acts as its own account (the plain master-key mode; testnet unaffected).
+const ISSUER_ADDRESS = process.env.ISSUER_ADDRESS || undefined;
 const TAXON = 7777, TF_MUTABLE_TRANSFERABLE = 8 | 16;
 // Royalty: native XRPL TransferFee, auto-paid to the issuer on every secondary sale.
 // 0–50000 = 0.000%–50.000% (0.001% steps). 5000 = 5%. Requires tfTransferable (set above).
@@ -66,7 +76,13 @@ const dec = h => {
 
 async function withClient(fn) {
   const c = new xrpl.Client(ENDPOINT); await c.connect();
-  try { return await fn(c, xrpl.Wallet.fromSeed(ISSUER_SEED)); } finally { await c.disconnect(); }
+  try {
+    const w = xrpl.Wallet.fromSeed(ISSUER_SEED);
+    // RegularKey: sign with w's keypair but ACT AS the issuer — override the address so tx.Account and
+    // every account lookup target the issuer; the signature stays the RegularKey's (valid per SetRegularKey).
+    if (ISSUER_ADDRESS) w.classicAddress = ISSUER_ADDRESS;
+    return await fn(c, w);
+  } finally { await c.disconnect(); }
 }
 async function readState(c, issuer, nid) {
   const r = await c.request({ command: 'account_nfts', account: issuer });
