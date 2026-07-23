@@ -319,26 +319,39 @@ function dLoop(){ requestAnimationFrame(dLoop); if(!document.getElementById('dan
 dLoop();
 document.getElementById('dance').addEventListener('pointerdown',e=>{if(e.target.dataset.close===undefined)dTap();});
 
-// ── Verify my pet — re-derive the pet from its on-ledger history (real verifier; local demo = trivially fair) ──
+// ── Verify my pet — re-derive from on-ledger history + a live "Rig it" demo that shows the detection ──
+const VBTN='padding:8px 12px;border-radius:8px;border:1px solid var(--glow);background:#0e3a4a;color:var(--hot);cursor:pointer;font-size:13px';
+const VINTRO=`The rules are open-source and the pet's whole state lives on-chain in a Dynamic NFT. `+
+  `Anyone re-runs the rules over this pet's ledger history and checks it matches the on-ledger state — <b>you don't trust us, you check.</b><br><br>`;
+let vLast=null, vRig=null;
+const VF=[['stage',s=>STAGE[s.stage]||s.stage],['form',s=>FORM[s.form]||'-'],['health',s=>s.health],['hunger',s=>s.hunger],['happiness',s=>s.happiness],['care',s=>s.care]];
+function pickRig(d){ if((d.form||0)<4) return {k:'form', real:FORM[d.form]||'-', fake:'legendary'};
+  if(d.health<100) return {k:'health', real:d.health, fake:100};
+  return {k:'hunger', real:d.hunger, fake:100}; }
+function renderVerify(){
+  const V=document.getElementById('vbody'); if(!vLast) return;
+  const {derived:d,current:c,interactions:n}=vLast, rig=vRig;
+  const rows=VF.map(([label,fn])=>{ const mism=rig&&rig.k===label; const cv=mism?rig.fake:fn(c);
+    return `<tr><td style="opacity:.6;padding:2px 10px 2px 0">${label}</td><td style="padding:2px 12px">${fn(d)}</td><td class="${mism?'bad':'ok'}" style="padding:2px 0">${cv}${mism?' ✗':' ✓'}</td></tr>`; }).join('');
+  const banner=rig
+    ? `<span class="bad">🚨 DIVERGED — CAUGHT. The operator wrote <b>${rig.k}=${rig.fake}</b>, but re-running the open rules over the ledger says <b>${rig.k}=${rig.real}</b>. Anyone re-derives it and sees the lie.</span>`
+    : `<span class="ok">✅ VERIFIED — all ${n} interaction${n===1?'':'s'} reproduce from the open rules. Re-derived == on-ledger. The game played fair.</span>`;
+  const table=`<table style="margin:10px 0;font-size:13px;border-collapse:collapse"><tr style="opacity:.55"><td></td><td style="padding:0 12px">rules say</td><td>on-ledger</td></tr>${rows}</table>`;
+  const btn=rig?`<button id="vrigreset" style="${VBTN}">↺ reset — show the honest record</button>`
+               :`<button id="vrig" style="${VBTN}">😈 Simulate a cheating operator</button>`;
+  V.innerHTML=VINTRO+banner+table+btn+
+    `<div style="opacity:.55;margin-top:8px;font-size:12px">This "rig" is a client-side simulation of the check — it never touches the ledger. It shows what the verifier does: compare a faithful replay to the on-chain state. A real operator lie fails exactly this way, for everyone.</div>`;
+  const rb=document.getElementById('vrig'); if(rb) rb.onclick=()=>{ vRig=pickRig(d); renderVerify(); };
+  const rr=document.getElementById('vrigreset'); if(rr) rr.onclick=()=>{ vRig=null; renderVerify(); };
+}
 document.getElementById('verify').onclick=async ()=>{
-  open('vov');
-  const intro=`The rules are open-source and the pet's whole state lives on-chain in a Dynamic NFT.<br><br>`+
-    `Anyone re-runs the rules over this pet's ledger history and checks it matches the on-ledger state — `+
-    `<b>you don't trust us, you check.</b><br><br>`;
-  const foot=`<br><br><span style="opacity:.6">Stats are cosmetic-safe; accessories can never touch the fair state.</span>`;
-  const V=document.getElementById('vbody');
-  if(!xamanReady||!petNid){ // standalone local demo: no on-ledger pet to replay
-    V.innerHTML=intro+`<span class="ok">✅ LOCAL DEMO — running the open rules in your browser; nothing on-ledger to dispute.</span>`+foot; return;
-  }
-  V.innerHTML=intro+`<span style="opacity:.7">Re-deriving from ledger history…</span>`;
+  open('vov'); vRig=null; const V=document.getElementById('vbody');
+  if(!xamanReady||!petNid){ vLast=null; V.innerHTML=VINTRO+`<span class="ok">✅ LOCAL DEMO — running the open rules in your browser; nothing on-ledger to dispute.</span>`; return; }
+  V.innerHTML=VINTRO+`<span style="opacity:.7">Re-deriving from ledger history…</span>`;
   const v=await XamanBridge.verify(petNid);
-  const pass=v&&v.verdict==='PASS';
-  const line = pass
-    ? `<span class="ok">✅ VERIFIED — all ${v.interactions} interactions reproduce from the open rules. The game played fair.</span>`
-    : (v&&v.verdict==='DIVERGED'
-        ? `<span class="bad">🚨 DIVERGED — the on-ledger state does NOT match a faithful replay. ${v.reason||''}</span>`
-        : `<span style="opacity:.7">Could not verify right now (${(v&&v.reason)||'no backend'}).</span>`);
-  V.innerHTML=intro+line+foot;
+  if(v&&v.verdict==='PASS'&&v.derived&&v.current){ vLast={derived:v.derived,current:v.current,interactions:v.interactions}; renderVerify(); }
+  else if(v&&v.verdict==='DIVERGED'){ vLast=null; V.innerHTML=VINTRO+`<span class="bad">🚨 DIVERGED — the on-ledger state does NOT match a faithful replay. ${v.reason||''}</span>`; }
+  else { vLast=null; V.innerHTML=VINTRO+`<span style="opacity:.7">Could not verify right now (${(v&&v.reason)||'no backend'}).</span>`; }
 };
 
 // overlay open/close

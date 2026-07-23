@@ -225,6 +225,7 @@ async function verifyPet(c, issuer, nid) {
   const derived = replay(genesis, interactions);
   const ok = enc(derived) === enc(current);   // reproduce the exact stored bytes
   return { ok, verdict: ok ? 'PASS' : 'DIVERGED', nid, interactions: interactions.length,
+    derived, current,     // both states, so the UI can show the field-level match + a live "rig it" demo
     reason: ok ? 'on-ledger state matches a faithful replay of the open rules'
                : 'on-ledger state does NOT match the open rules — the operator deviated' };
 }
