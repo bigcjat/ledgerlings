@@ -11,13 +11,22 @@
  *   window.LEDGERLINGS_BACKEND   = 'https://...' // the issuer service base URL (server.js)
  */
 const XamanBridge = (() => {
-  let xumm = null, account = null, ready = false;
+  let xumm = null, account = null, ready = false, sourceTag = null;
   const KEY = window.XAMAN_API_KEY || '';
   const ISSUER = window.LEDGERLINGS_ISSUER || '';
   const BACKEND = window.LEDGERLINGS_BACKEND || '';
   const hex = s => Array.from(new TextEncoder().encode(s)).map(b => b.toString(16).padStart(2, '0')).join('').toUpperCase();
 
+  // pull the Make Waves SourceTag from the backend so the PLAYER's own interaction Payment is credited
+  // to Ledgerlings on the leaderboard (not just issuer-built txns). Public, non-secret.
+  async function loadConfig() {
+    if (!BACKEND) return;
+    try { const cfg = await (await fetch(`${BACKEND}/config`)).json(); if (Number.isInteger(cfg && cfg.sourceTag)) sourceTag = cfg.sourceTag; }
+    catch { /* no config → no tag */ }
+  }
+
   async function init() {
+    await loadConfig();
     if (!window.Xumm || !KEY) { console.info('[xaman] no SDK/API key → local demo mode'); return false; }
     try {
       xumm = new Xumm(KEY);                          // xApp context auto-resolves the user via the OTT
@@ -26,7 +35,7 @@ const XamanBridge = (() => {
       });
       account = await xumm.user.account;
       ready = !!account;
-      console.info('[xaman] ready as', account);
+      console.info('[xaman] ready as', account, '· sourceTag', sourceTag);
       return ready;
     } catch (e) { console.warn('[xaman] init failed → local mode:', e); return false; }
   }
@@ -42,6 +51,7 @@ const XamanBridge = (() => {
         Destination: ISSUER,
         Amount: '10',                                // a tiny nudge tx; the memo carries the intent
         Memos: [{ Memo: { MemoType: hex('ledgerlings/op'), MemoData: hex(memoData) } }],
+        ...(sourceTag != null ? { SourceTag: sourceTag } : {}),   // credit THIS player's account on the Make Waves leaderboard
       },
       custom_meta: { identifier: 'ledgerlings-' + op, instruction: `Ledgerlings: ${op} your pet` },
     });
@@ -81,6 +91,11 @@ const XamanBridge = (() => {
     try { return await (await fetch(`${BACKEND}/adopt`, { method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ owner: account }) })).json(); } catch { return null; }
   }
+  /* current validated ledger (for LIVE-pet cooldown math). null if no backend. */
+  async function now() {
+    if (!BACKEND) return null;
+    try { const j = await (await fetch(`${BACKEND}/now`)).json(); return Number.isInteger(j && j.ledger) ? j.ledger : null; } catch { return null; }
+  }
 
-  return { init, interact, fetchPet, adopt, verify, get account() { return account; }, get ready() { return ready; } };
+  return { init, interact, fetchPet, adopt, verify, now, get account() { return account; }, get ready() { return ready; }, get sourceTag() { return sourceTag; } };
 })();

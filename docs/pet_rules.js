@@ -5,7 +5,10 @@
   else root.PetRules = factory();
 }(typeof self !== 'undefined' ? self : this, function () {
   const DAY = 21600, DECAY = 60, RESTORE = 50, COOLDOWN = DAY / 6, LIFESPAN = 40 * DAY;
-  const STAGE_AGE = [0, 1 * DAY, 3 * DAY, 7 * DAY, 21 * DAY];
+  // Egg hatches in-session (~60 ledgers ≈ 3-4 min) so a first-time player/judge sees the pet come alive
+  // immediately instead of a 24h dead egg. Later stages keep the longer cadence. DAY is the master pacing dial.
+  const HATCH = 60;
+  const STAGE_AGE = [0, HATCH, 3 * DAY, 7 * DAY, 21 * DAY];
   const EGG = 0, BABY = 1, TEEN = 2, ADULT = 3, ELDER = 4, PASSED = 5;
   const FEED = 1, PLAY = 2, CLEAN = 3, HEAL = 4;
   const STAGE = ['egg', 'baby', 'teen', 'adult', 'elder', 'passed'];

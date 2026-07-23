@@ -45,7 +45,7 @@ const CHARACTER_TAXON = 7779;
 const ACHIEVEMENT_TAXON = 7780;
 // Ruleset version stamped into each badge so it can't be validated against a swapped ruleset.
 // Production = the anchored open-rules hash; MVP default 'v1'.
-const RULESET_VERSION = String(process.env.RULESET_VERSION || 'v1').slice(0, 12);
+const RULESET_VERSION = String(process.env.RULESET_VERSION || 'v2').slice(0, 12);   // v2: egg hatches in-session
 // Auto-mint newly-earned badges inside /interact (more live on-chain txns for the demo). Default ON; AUTO_AWARD=0 disables.
 const AUTO_AWARD = process.env.AUTO_AWARD !== '0';
 // Battles (Make Waves #10): provably-fair pet duels. Soulbound "battle card" record NFT; own taxon.
@@ -131,19 +131,41 @@ function requireAdmin(req, res, next) {
   next();
 }
 
-// adopt: mint a mutable pet dNFT owned (in-state) by the user
-app.post('/adopt', requireAdmin, async (req, res) => {
+// adopt: mint a mutable pet dNFT owned (in-state) by the user. PUBLIC so a real player can start with one tap,
+// but hardened: server builds the genesis URI (no state injection) and caps ONE living pet per owner (returns the
+// existing one instead of minting again). Only /adopt is public; every other mint stays requireAdmin.
+app.post('/adopt', async (req, res) => {
   const owner = req.body.owner;
-  if (!owner) return res.status(400).json({ error: 'owner required' });
-  const out = await withClient(async (c, w) => {
-    const now = (await c.request({ command: 'ledger', ledger_index: 'validated' })).result.ledger_index;
-    // take the nid from the mint's meta.nftoken_id (robust — last-NFT is wrong once one issuer holds many pets)
-    const prepared = await c.autofill(tag({ TransactionType: 'NFTokenMint', Account: w.classicAddress,
-      NFTokenTaxon: TAXON, Flags: TF_MUTABLE_TRANSFERABLE, TransferFee: ROYALTY_BPS, URI: enc(R.genesis(now, owner)) }));
-    const res = (await c.submitAndWait(w.sign(prepared).tx_blob)).result;
-    return { result: res.meta.TransactionResult, nid: res.meta.nftoken_id, state: R.genesis(now, owner) };
-  });
-  res.json(out);
+  if (!owner || !xrpl.isValidClassicAddress(owner)) return res.status(400).json({ error: 'valid owner address required' });
+  try {
+    const out = await withClient(async (c, w) => {
+      // one-living-pet-per-owner cap: return the caller's existing pet rather than minting a second
+      for (const n of await allIssuerNfts(c, w.classicAddress)) {
+        if (n.NFTokenTaxon !== TAXON || !n.URI) continue;
+        let s; try { s = dec(n.URI); } catch { continue; }
+        if (s.owner === owner && s.alive !== 0) return { existing: true, nid: n.NFTokenID, state: s };
+      }
+      const now = (await c.request({ command: 'ledger', ledger_index: 'validated' })).result.ledger_index;
+      const prepared = await c.autofill(tag({ TransactionType: 'NFTokenMint', Account: w.classicAddress,
+        NFTokenTaxon: TAXON, Flags: TF_MUTABLE_TRANSFERABLE, TransferFee: ROYALTY_BPS, URI: enc(R.genesis(now, owner)) }));
+      const rr = (await c.submitAndWait(w.sign(prepared).tx_blob)).result;
+      return { result: rr.meta.TransactionResult, nid: rr.meta.nftoken_id, state: R.genesis(now, owner) };
+    });
+    res.json(out);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// public config — lets the frontend stamp the Make Waves SourceTag on the PLAYER's own interaction Payment
+// (so distinct player accounts show on the leaderboard, not just issuer-built txns).
+app.get('/config', (req, res) => {
+  res.json({ sourceTag: SOURCE_TAG !== undefined ? SOURCE_TAG : null, taxon: TAXON, rulesetVersion: RULESET_VERSION });
+});
+
+// current validated ledger — the frontend uses this as `now` for LIVE pets (real ledger indices) so it can
+// gray-out feed/play while on cooldown (no wasted signature on a step() no-op).
+app.get('/now', async (req, res) => {
+  try { const l = (await withClient((c) => c.request({ command: 'ledger', ledger_index: 'validated' }))).result.ledger_index; res.json({ ledger: l }); }
+  catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // read pet state
@@ -327,8 +349,8 @@ async function loadBattle(c, issuer, battleId) {
         try {
           if (unhex(md.MemoType || '') !== BATTLE_MEMO) continue;
           const f = unhex(md.MemoData || '').split('|'), kind = f[0];
-          if (kind === 'challenge' && hash === battleId) out.challenge = { aNid: f[1], stakeDrops: f[2], N: Number(f[3]), ownerA: tx.Account, amount: tx.Amount, lseq };
-          else if (kind === 'accept' && f[1] === battleId) out.accept = { bNid: f[2], ownerB: tx.Account, amount: tx.Amount, lseq };
+          if (kind === 'challenge' && hash === battleId) out.challenge = { aNid: f[1], stakeDrops: f[2], N: Number(f[3]), ownerA: tx.Account, delivered: (t.meta && t.meta.delivered_amount) || tx.Amount, lseq };
+          else if (kind === 'accept' && f[1] === battleId) out.accept = { bNid: f[2], ownerB: tx.Account, delivered: (t.meta && t.meta.delivered_amount) || tx.Amount, lseq };
           else if (kind === 'result' && f[1] === battleId) out.result = { winnerNid: f[2], scoreA: Number(f[3]), scoreB: Number(f[4]), rv: f[5], dest: tx.Destination, lseq };
         } catch { /* skip malformed memo */ }
       }
@@ -352,18 +374,26 @@ async function resolveBattleTx(c, w, battleId) {
   if (!hA.genesis || !hB.genesis) return { error: 'a pet in this battle was not found' };
   const sA = stateAtLedger(hA.genesis, hA.interactions, N), sB = stateAtLedger(hB.genesis, hB.interactions, N);
   const d = BR.resolveBattle(seed, sA, sB, aNid, bNid);
-  const winnerNid = d.winner === null ? 'DRAW' : d.winner;
-  // Stake is authoritative from the challenge memo (accept must match, enforced by /battle/accept). Both parties
-  // paid `stake` to the issuer, so pot = stake*2. (Avoids relying on account_tx Amount echoes.)
+  // Custody guard (mainnet-safe): pot = what ACTUALLY arrived (meta.delivered_amount), not the memo. If either
+  // side delivered less than the agreed stake, VOID the battle and refund the actual amounts — no one can win the
+  // counterpart's real XRP by under-delivering their own stake.
   const stake = Number(b.challenge.stakeDrops || 0);
-  const pot = stake * 2;
+  const deliveredA = Number(b.challenge.delivered || 0), deliveredB = Number(b.accept.delivered || 0);
+  if (deliveredA < stake || deliveredB < stake) {
+    const voidMemo = [{ Memo: { MemoType: hex(BATTLE_MEMO), MemoData: hex(['result', battleId, 'VOID', 0, 0, RULESET_VERSION].join('|')) } }];
+    if (deliveredA > 0) await submit(c, w, { TransactionType: 'Payment', Account: issuer, Destination: b.challenge.ownerA, Amount: String(Math.max(1, deliveredA)), Memos: voidMemo });
+    if (deliveredB > 0) await submit(c, w, { TransactionType: 'Payment', Account: issuer, Destination: b.accept.ownerB, Amount: String(Math.max(1, deliveredB)) });
+    return { battleId, status: 'VOID', reason: 'stake underpaid — refunded actual amounts', stake, deliveredA, deliveredB };
+  }
+  const winnerNid = d.winner === null ? 'DRAW' : d.winner;
+  const pot = deliveredA + deliveredB;
   const fee = Math.floor(pot * BATTLE_FEE_BPS / 10000);
   const resultMemo = [{ Memo: { MemoType: hex(BATTLE_MEMO), MemoData: hex(['result', battleId, winnerNid, d.scoreA, d.scoreB, RULESET_VERSION].join('|')) } }];
   let payout;
   if (d.winner === null) {                                                    // draw → refund both, carry result memo
     await submit(c, w, { TransactionType: 'Payment', Account: issuer, Destination: b.challenge.ownerA, Amount: '1', Memos: resultMemo });
-    if (stake > 1) { await submit(c, w, { TransactionType: 'Payment', Account: issuer, Destination: b.challenge.ownerA, Amount: String(stake) });
-      await submit(c, w, { TransactionType: 'Payment', Account: issuer, Destination: b.accept.ownerB, Amount: String(stake) }); }
+    if (deliveredA > 1) await submit(c, w, { TransactionType: 'Payment', Account: issuer, Destination: b.challenge.ownerA, Amount: String(deliveredA) });
+    if (deliveredB > 1) await submit(c, w, { TransactionType: 'Payment', Account: issuer, Destination: b.accept.ownerB, Amount: String(deliveredB) });
     payout = { winner: 'DRAW', refunded: true };
   } else {
     const winnerOwner = d.winner === aNid ? sA.owner : sB.owner;
@@ -386,6 +416,11 @@ async function verifyBattle(c, issuer, battleId) {
   if (!b.challenge) return { ok: false, verdict: 'NOT_FOUND', reason: 'no challenge with this id' };
   if (!b.accept) return { ok: false, verdict: 'OPEN', reason: 'not accepted yet' };
   if (!b.result) return { ok: false, verdict: 'UNRESOLVED', reason: 'not resolved yet' };
+  if (b.result.winnerNid === 'VOID') {   // battle was voided for underpayment; refunds are on-ledger + checkable
+    const stake = Number(b.challenge.stakeDrops || 0), dA = Number(b.challenge.delivered || 0), dB = Number(b.accept.delivered || 0);
+    const legit = dA < stake || dB < stake;
+    return { ok: legit, verdict: legit ? 'VOID' : 'FAIL', battleId, reason: legit ? 'voided: a party delivered less than the agreed stake; refunded' : 'VOID recorded but both stakes were fully delivered' };
+  }
   const { aNid, N } = b.challenge, { bNid } = b.accept;
   const lh = await ledgerHashOf(c, N);
   if (!lh) return { ok: false, verdict: 'ERROR', reason: 'pinned ledger not available' };
@@ -443,6 +478,10 @@ app.post('/battle/accept', async (req, res) => {
       if (!b.challenge) return { error: 'unknown battleId' };
       if (b.accept) return { error: 'already accepted' };
       if (bNid === b.challenge.aNid) return { error: 'a pet cannot battle itself' };
+      // must accept BEFORE the pinned ledger closes — otherwise ledgerHash(N) is known and the accepter
+      // could join only when the seed already favors them. Closes the accepter-foreknowledge bias.
+      const curL = (await c.request({ command: 'ledger', ledger_index: 'validated' })).result.ledger_index;
+      if (curL >= b.challenge.N) return { error: `challenge expired: pinned ledger ${b.challenge.N} already reached (current ${curL})` };
       const ps = await readState(c, issuer, bNid);
       if (!ps) return { error: 'pet not found' };
       if (ps.owner !== owner) return { error: 'you do not own this pet' };
@@ -644,12 +683,61 @@ app.post('/broker-sale', requireAdmin, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// ---- Issuer poller: auto-applies signed interactions (no operator in the loop) ----
+// A pet's correct state = replay(its on-ledger history). The poller reconciles each pet to that replay:
+// if the on-ledger URI differs, it NFTokenModifies to the derived state + auto-awards badges. Idempotent
+// (no-op once matched) and self-healing (actively enforces the same property /verify checks).
+async function reconcilePet(c, w, nid) {
+  const { current, genesis, interactions } = await loadHistory(c, w.classicAddress, nid);
+  if (!genesis || !current) return { nid, updated: false };
+  const derived = replay(genesis, interactions);
+  if (enc(derived) === enc(current)) return { nid, updated: false };
+  await submit(c, w, { TransactionType: 'NFTokenModify', Account: w.classicAddress, NFTokenID: nid, URI: enc(derived) });
+  if (AUTO_AWARD) { try { await claimAchievements(c, w, nid); } catch { /* badge mint best-effort */ } }
+  return { nid, updated: true, state: derived };
+}
+let pollerLastLedger = 0;
+async function pollerTick(c, w) {
+  const issuer = w.classicAddress; const affected = new Set(); let marker;
+  do {
+    const r = await c.request({ command: 'account_tx', account: issuer, ledger_index_min: pollerLastLedger + 1, ledger_index_max: -1, forward: true, limit: 200, marker });
+    for (const t of r.result.transactions) {
+      const tx = t.tx || t.tx_json || {}; const lseq = tx.ledger_index || t.ledger_index;
+      if (lseq && lseq > pollerLastLedger) pollerLastLedger = lseq;
+      if (tx.TransactionType === 'Payment' && tx.Destination === issuer) {
+        for (const mm of (tx.Memos || [])) { const md = mm.Memo || {}; try { if (unhex(md.MemoType || '') === 'ledgerlings/op') { const p = unhex(md.MemoData || '').split('|'); if (p[1]) affected.add(p[1]); } } catch { /* skip */ } }
+      }
+    }
+    marker = r.result.marker;
+  } while (marker);
+  for (const nid of affected) { try { await reconcilePet(c, w, nid); } catch (e) { console.warn('[poller] reconcile', nid.slice(0, 8), e.message); } }
+  return affected.size;
+}
+async function startPoller() {
+  if (!ISSUER_SEED) { console.warn('[poller] disabled — no LEDGERLINGS_ISSUER_SEED'); return; }
+  const c = new xrpl.Client(ENDPOINT); await c.connect();
+  const w = xrpl.Wallet.fromSeed(ISSUER_SEED); if (ISSUER_ADDRESS) w.classicAddress = ISSUER_ADDRESS;
+  // catch up every existing pet once, then only react to new interactions.
+  const pets = (await allIssuerNfts(c, w.classicAddress)).filter(n => n.NFTokenTaxon === TAXON);
+  for (const n of pets) { try { await reconcilePet(c, w, n.NFTokenID); } catch (e) { console.warn('[poller] init', e.message); } }
+  pollerLastLedger = (await c.request({ command: 'ledger', ledger_index: 'validated' })).result.ledger_index;
+  console.log(`[poller] watching ${w.classicAddress}; caught up ${pets.length} pet(s); tracking from ledger ${pollerLastLedger}`);
+  const loop = async () => {
+    try { if (!c.isConnected()) await c.connect(); await pollerTick(c, w); }
+    catch (e) { console.warn('[poller] tick', e.message); }
+    setTimeout(loop, 6000);
+  };
+  setTimeout(loop, 6000);
+}
+
 // export the issuer primitives so a harness can drive the logic without starting a server.
 module.exports = { app, withClient, readState, submit, verifyPet, replay, enc, dec, hex, unhex, R, TAXON, TF_MUTABLE_TRANSFERABLE, ROYALTY_BPS, ENDPOINT,
   A, loadHistory, encAch, decAch, listAchievements, claimAchievements, verifyAchievement, ACHIEVEMENT_TAXON, RULESET_VERSION,
-  BR, seedFor, stateAtLedger, loadBattle, resolveBattleTx, verifyBattle, ledgerHashOf, BATTLE_TAXON, BATTLE_FEE_BPS, BATTLE_LEDGER_MARGIN, BATTLE_MEMO };
+  BR, seedFor, stateAtLedger, loadBattle, resolveBattleTx, verifyBattle, ledgerHashOf, BATTLE_TAXON, BATTLE_FEE_BPS, BATTLE_LEDGER_MARGIN, BATTLE_MEMO,
+  reconcilePet, pollerTick, startPoller, allIssuerNfts };
 
 if (require.main === module) {
   const PORT = process.env.PORT || 8788;
   app.listen(PORT, () => console.log(`Ledgerlings issuer on :${PORT} (endpoint ${ENDPOINT})`));
+  if (process.env.POLLER !== '0') startPoller().catch(e => console.warn('[poller] failed to start', e.message));
 }

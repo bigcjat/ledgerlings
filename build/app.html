@@ -256,12 +256,24 @@ document.getElementById('moodBadge').onclick=()=>{
 
 // ── interactions (local demo = apply rules now; PRODUCTION = sign a Payment+memo via Xaman, issuer modifies the dNFT) ──
 const OPNUM={feed:FEED,play:PLAY,clean:CLEAN,heal:HEAL};
+// unified clock: LIVE pets use the real validated ledger (fetched from the backend); local demo uses the boot clock.
+let liveLedger0=null, liveT0=0;
+async function syncLedger(){ const l=await XamanBridge.now(); if(l){ liveLedger0=l; liveT0=performance.now(); refreshOps(); } }
+const nowL=()=> (petNid && liveLedger0!=null) ? liveLedger0 + Math.floor((performance.now()-liveT0)/4000) : nowLedger();
+// feed/play are cooldown-gated (no-farming). Gray them out while on cooldown so no Xaman signature is wasted on a no-op.
+function opReady(op){ if(op!=='feed'&&op!=='play') return true; const last=op==='feed'?pet.last_feed:pet.last_play; return !last || (nowL()-last)>=COOLDOWN; }
+function refreshOps(){ document.querySelectorAll('[data-op]').forEach(b=>{ const op=b.dataset.op; if(op==='feed'||op==='play'){ const rdy=opReady(op); b.disabled=!rdy; b.style.opacity=rdy?'':'.4'; b.title=rdy?'':'on cooldown — feeding/playing again now is a no-op (no-farming rule)'; } }); }
+setInterval(refreshOps,1000);
 document.querySelectorAll('[data-op]').forEach(b=>b.onclick=async ()=>{
   const op=b.dataset.op, before=JSON.stringify(pet);
+  if(!opReady(op)){ toast(op+' on cooldown'); return; }    // don't spend a signature on a no-op
   if(xamanReady){                                          // REAL: sign a Payment+memo in Xaman; issuer applies the rules + NFTokenModify
     const r=await XamanBridge.interact(op,petNid);
     if(r.local){ /* fell back */ } else if(!r.signed){ toast('cancelled'); return; }
-    else { const live=petNid && await XamanBridge.fetchPet(petNid); if(live) pet=live; toast(op+' signed! 💖'); lastJoy=performance.now(); return; }
+    else { toast(op+' signed! 💖 applying…'); lastJoy=performance.now();
+      // the issuer poller applies the NFTokenModify within a few ledgers; poll for the authoritative state
+      for(let i=0;i<8;i++){ await new Promise(r=>setTimeout(r,2500)); const live=petNid&&await XamanBridge.fetchPet(petNid); if(live)pet=live; }
+      await syncLedger(); refreshOps(); return; }
   }
   pet=step(pet,OPNUM[op],nowLedger(),OWNER);               // LOCAL demo (no Xaman / standalone)
   if(JSON.stringify(pet)!==before){lastJoy=performance.now();toast(op+'! 💖');}
@@ -274,6 +286,7 @@ document.querySelectorAll('[data-op]').forEach(b=>b.onclick=async ()=>{
     const a=await XamanBridge.adopt();                     // mints (or returns) the user's pet dNFT
     if(a&&a.nid){ petNid=a.nid; if(a.state) pet=a.state; }
     toast('connected: '+OWNER.slice(0,8)+'…');
+    await syncLedger(); setInterval(syncLedger,30000);     // real ledger for cooldown gray-out
   }
 })();
 
