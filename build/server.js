@@ -16,6 +16,7 @@ const express = require('express');
 const xrpl = require('xrpl');
 const { XummSdk } = require('xumm-sdk');
 const R = require('./pet_rules.js');
+const A = require('./achievements.js');
 
 // sdk only needed for /interact (verifying signed payloads); lazy so /adopt + /pet + tests run without it.
 const sdk = process.env.XAMAN_API_KEY ? new XummSdk(process.env.XAMAN_API_KEY, process.env.XAMAN_API_SECRET) : null;
@@ -37,6 +38,14 @@ const ACCESSORY_TAXON = 7778, TF_TRANSFERABLE = 8;
 // Bring-your-character registrations (NFT projects adding a playable skin): own taxon. The roster is
 // just "all issuer NFTs at this taxon" — persistent on-ledger, no database needed.
 const CHARACTER_TAXON = 7779;
+// Achievements (Make Waves #11): soulbound badges — non-transferable (Flags 0), no royalty, own taxon.
+// A badge is a PURE PROJECTION of the pet's on-ledger history (achievements.js), so it re-derives + can't be faked.
+const ACHIEVEMENT_TAXON = 7780;
+// Ruleset version stamped into each badge so it can't be validated against a swapped ruleset.
+// Production = the anchored open-rules hash; MVP default 'v1'.
+const RULESET_VERSION = String(process.env.RULESET_VERSION || 'v1').slice(0, 12);
+// Auto-mint newly-earned badges inside /interact (more live on-chain txns for the demo). Default ON; AUTO_AWARD=0 disables.
+const AUTO_AWARD = process.env.AUTO_AWARD !== '0';
 // SECURITY: all mint/write endpoints require this admin token (fail-closed). No anon minting from the
 // issuer. ALLOWED_ORIGIN locks CORS. Set both in the host env.
 const ADMIN_TOKEN = process.env.ADMIN_TOKEN || '';
@@ -146,9 +155,11 @@ function replay(genesis, interactions) {
 // Multi-pet-sound: genesis = the mint whose meta.nftoken_id == nid; interactions = Payments memo'd
 // "<op>|<nid>" for THIS nid (so other pets' interactions are not mixed in). `now` per interaction =
 // the Payment's ledger_index (deterministic — the verifiability fix).
-async function verifyPet(c, issuer, nid) {
+// Pull a pet's full on-ledger history: genesis mint URI + all interaction Payments (memo'd "<op>|<nid>"
+// for THIS nid), each with its Payment ledger_index (= the deterministic `now`). Shared by the pet
+// verifier AND the achievements projection so both replay the exact same inputs.
+async function loadHistory(c, issuer, nid) {
   const current = await readState(c, issuer, nid);
-  if (!current) return { ok: false, verdict: 'NOT_FOUND', reason: 'pet not found at issuer' };
   let genesis = null; const interactions = [];
   let marker, scanned = 0;
   do {
@@ -172,8 +183,15 @@ async function verifyPet(c, issuer, nid) {
     }
     marker = r.result.marker; scanned += r.result.transactions.length;
   } while (marker && scanned < 5000);
-  if (!genesis) return { ok: false, verdict: 'NO_GENESIS', reason: 'no mint URI found for this nid' };
   interactions.sort((a, b) => a[1] - b[1]);
+  return { current, genesis, interactions };
+}
+
+// verify a pet: re-derive it from its on-ledger history and compare to the on-chain state.
+async function verifyPet(c, issuer, nid) {
+  const { current, genesis, interactions } = await loadHistory(c, issuer, nid);
+  if (!current) return { ok: false, verdict: 'NOT_FOUND', reason: 'pet not found at issuer' };
+  if (!genesis) return { ok: false, verdict: 'NO_GENESIS', reason: 'no mint URI found for this nid' };
   const derived = replay(genesis, interactions);
   const ok = enc(derived) === enc(current);   // reproduce the exact stored bytes
   return { ok, verdict: ok ? 'PASS' : 'DIVERGED', nid, interactions: interactions.length,
@@ -181,8 +199,95 @@ async function verifyPet(c, issuer, nid) {
                : 'on-ledger state does NOT match the open rules — the operator deviated' };
 }
 
+// ---- Achievements (Make Waves #11): badges = a pure projection of the same replay ----
+// Compact soulbound-badge codec (hex(JSON) <= 256 bytes, same cap as pets). Full pet nid kept so the
+// badge is independently replayable; owner is looked up from the pet, not duplicated.
+function encAch(nid, achId, earnedLedger, meta) {
+  const o = { t: 'ach', p: nid, i: achId, L: earnedLedger, rv: RULESET_VERSION };
+  if (meta && meta.form) o.fm = meta.form;
+  let h = hex(JSON.stringify(o));
+  if (h.length > 256) { delete o.rv; h = hex(JSON.stringify(o)); }   // shed rv first if oversized (keep pet+id+ledger)
+  return h;
+}
+function decAch(uri) { try { const o = JSON.parse(unhex(uri)); return o && o.t === 'ach' ? o : null; } catch { return null; } }
+
+// all NFTs held by an account (paginated) — badges can accumulate past one page.
+async function allIssuerNfts(c, issuer) {
+  const out = []; let marker;
+  do {
+    const r = await c.request({ command: 'account_nfts', account: issuer, limit: 400, marker });
+    out.push(...r.result.account_nfts); marker = r.result.marker;
+  } while (marker);
+  return out;
+}
+// minted badges (optionally filtered to one pet nid)
+async function listAchievements(c, issuer, nid) {
+  return (await allIssuerNfts(c, issuer))
+    .filter(n => n.NFTokenTaxon === ACHIEVEMENT_TAXON && n.URI)
+    .map(n => { const o = decAch(n.URI); return o ? { achNid: n.NFTokenID, ...o } : null; })
+    .filter(Boolean)
+    .filter(b => !nid || b.p === nid);
+}
+// mint any newly-earned, not-yet-minted badges for a pet. Idempotent (skips (pet, achId) already on-ledger).
+async function claimAchievements(c, w, nid, only) {
+  const issuer = w.classicAddress;
+  const { genesis, interactions } = await loadHistory(c, issuer, nid);
+  if (!genesis) return { minted: [], skipped: [], reason: 'no genesis for nid' };
+  const earned = A.achievementsFor(genesis, interactions).filter(e => !only || e.id === only);
+  const haveIds = new Set((await listAchievements(c, issuer, nid)).map(b => b.i));
+  const minted = [], skipped = [];
+  for (const e of earned) {
+    if (haveIds.has(e.id)) { skipped.push(e.id); continue; }
+    const prepared = await c.autofill(tag({ TransactionType: 'NFTokenMint', Account: issuer,
+      NFTokenTaxon: ACHIEVEMENT_TAXON, Flags: 0 /* soulbound: non-transferable, no royalty */,
+      URI: encAch(nid, e.id, e.earnedLedger, e.meta) }));
+    const r = (await c.submitAndWait(w.sign(prepared).tx_blob)).result;
+    minted.push({ id: e.id, earnedLedger: e.earnedLedger, result: r.meta.TransactionResult, achNid: r.meta.nftoken_id });
+  }
+  return { minted, skipped, earnedCount: earned.length };
+}
+// verify a badge: re-derive its pet from on-ledger history and assert the badge was earned at the claimed ledger.
+async function verifyAchievement(c, issuer, achNid) {
+  const badge = (await allIssuerNfts(c, issuer)).find(n => n.NFTokenID === achNid);
+  if (!badge) return { ok: false, verdict: 'NOT_FOUND', reason: 'badge not held by issuer' };
+  const o = badge.URI && decAch(badge.URI);
+  if (!o) return { ok: false, verdict: 'NOT_ACHIEVEMENT', reason: 'not a Ledgerlings badge' };
+  const { genesis, interactions } = await loadHistory(c, issuer, o.p);
+  if (!genesis) return { ok: false, verdict: 'NO_GENESIS', reason: 'pet for this badge not found' };
+  const match = A.achievementsFor(genesis, interactions).find(e => e.id === o.i);
+  const ok = Boolean(match) && match.earnedLedger === o.L;
+  return { ok, verdict: ok ? 'PASS' : 'FAIL', achNid, pet: o.p, achId: o.i, claimedLedger: o.L,
+    derivedLedger: match ? match.earnedLedger : null,
+    reason: ok ? 'badge re-derives from the open rules at the claimed ledger'
+      : match ? 'earnedLedger mismatch — badge does not match a faithful replay'
+              : 'this pet never earned this badge under the open rules' };
+}
+
 app.get('/verify/:nid', async (req, res) => {
   try { res.json(await withClient((c, w) => verifyPet(c, w.classicAddress, req.params.nid))); }
+  catch (e) { res.status(500).json({ ok: false, verdict: 'ERROR', reason: e.message }); }
+});
+
+// claim: mint any newly-earned badges for a pet (admin, idempotent). Optional body.achId limits to one.
+app.post('/claim-achievement', requireAdmin, async (req, res) => {
+  const { nid, achId } = req.body || {};
+  if (!nid) return res.status(400).json({ error: 'nid required' });
+  try { res.json(await withClient((c, w) => claimAchievements(c, w, nid, achId))); }
+  catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// list a pet's minted badges + the full catalog (public).
+app.get('/achievements/:nid', async (req, res) => {
+  try {
+    const badges = await withClient((c, w) => listAchievements(c, w.classicAddress, req.params.nid));
+    res.json({ nid: req.params.nid, badges,
+      catalog: A.CATALOG.map(a => ({ id: a.id, label: a.label, desc: a.desc })) });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// verify a badge: re-derive it from the pet's on-ledger history (public — the fairness proof).
+app.get('/verify-achievement/:achNid', async (req, res) => {
+  try { res.json(await withClient((c, w) => verifyAchievement(c, w.classicAddress, req.params.achNid))); }
   catch (e) { res.status(500).json({ ok: false, verdict: 'ERROR', reason: e.message }); }
 });
 
@@ -210,7 +315,10 @@ app.post('/interact', requireAdmin, async (req, res) => {
     const next = R.step(state, op, now, sender);            // sender !== owner ⇒ no-op (owner-only)
     const result = await submit(c, w, { TransactionType: 'NFTokenModify',
       Account: w.classicAddress, NFTokenID: nid, URI: enc(next) });
-    return { result, state: next, applied: JSON.stringify(next) !== JSON.stringify(state) };
+    // auto-award: mint any milestone badge this interaction just crossed (more live on-chain txns). Non-fatal.
+    let achievements;
+    if (AUTO_AWARD) { try { achievements = await claimAchievements(c, w, nid); } catch (e) { achievements = { error: e.message }; } }
+    return { result, state: next, applied: JSON.stringify(next) !== JSON.stringify(state), achievements };
   });
   res.json(out);
 });
@@ -353,7 +461,8 @@ app.post('/broker-sale', requireAdmin, async (req, res) => {
 });
 
 // export the issuer primitives so a harness can drive the logic without starting a server.
-module.exports = { app, withClient, readState, submit, verifyPet, replay, enc, dec, hex, unhex, R, TAXON, TF_MUTABLE_TRANSFERABLE, ROYALTY_BPS, ENDPOINT };
+module.exports = { app, withClient, readState, submit, verifyPet, replay, enc, dec, hex, unhex, R, TAXON, TF_MUTABLE_TRANSFERABLE, ROYALTY_BPS, ENDPOINT,
+  A, loadHistory, encAch, decAch, listAchievements, claimAchievements, verifyAchievement, ACHIEVEMENT_TAXON, RULESET_VERSION };
 
 if (require.main === module) {
   const PORT = process.env.PORT || 8788;
