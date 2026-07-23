@@ -15,8 +15,10 @@
 const express = require('express');
 const xrpl = require('xrpl');
 const { XummSdk } = require('xumm-sdk');
+const crypto = require('crypto');
 const R = require('./pet_rules.js');
 const A = require('./achievements.js');
+const BR = require('./battle_rules.js');
 
 // sdk only needed for /interact (verifying signed payloads); lazy so /adopt + /pet + tests run without it.
 const sdk = process.env.XAMAN_API_KEY ? new XummSdk(process.env.XAMAN_API_KEY, process.env.XAMAN_API_SECRET) : null;
@@ -46,6 +48,12 @@ const ACHIEVEMENT_TAXON = 7780;
 const RULESET_VERSION = String(process.env.RULESET_VERSION || 'v1').slice(0, 12);
 // Auto-mint newly-earned badges inside /interact (more live on-chain txns for the demo). Default ON; AUTO_AWARD=0 disables.
 const AUTO_AWARD = process.env.AUTO_AWARD !== '0';
+// Battles (Make Waves #10): provably-fair pet duels. Soulbound "battle card" record NFT; own taxon.
+const BATTLE_TAXON = 7781;
+const BATTLE_FEE_BPS = Number(process.env.BATTLE_FEE_BPS || 500);        // platform cut of the pot (5%)
+// Challenger pins a FUTURE ledger N >= now + margin so its hash is unknowable at commit (unbiasable seed).
+const BATTLE_LEDGER_MARGIN = Number(process.env.BATTLE_LEDGER_MARGIN || 20);
+const BATTLE_MEMO = 'ledgerlings/battle';
 // SECURITY: all mint/write endpoints require this admin token (fail-closed). No anon minting from the
 // issuer. ALLOWED_ORIGIN locks CORS. Set both in the host env.
 const ADMIN_TOKEN = process.env.ADMIN_TOKEN || '';
@@ -291,6 +299,182 @@ app.get('/verify-achievement/:achNid', async (req, res) => {
   catch (e) { res.status(500).json({ ok: false, verdict: 'ERROR', reason: e.message }); }
 });
 
+// ---- Provably-fair battles (Make Waves #10) ----
+// Seed = SHA-256(ledgerHash(N) | battleId | aNid | bNid). N is pinned in the future at challenge time, so its
+// hash is unknowable to anyone until it closes => unbiasable, yet re-derivable by anyone. (Same idea as `now`.)
+function seedFor(ledgerHash, battleId, aNid, bNid) {
+  return crypto.createHash('sha256').update([ledgerHash, battleId, aNid, bNid].join('|')).digest('hex');
+}
+// pet state AS OF ledger N = replay only the interactions up to N (so the result is fixed + re-derivable).
+function stateAtLedger(genesis, interactions, N) {
+  return replay(genesis, interactions.filter(([, lseq]) => lseq <= N));
+}
+async function ledgerHashOf(c, N) {
+  const r = await c.request({ command: 'ledger', ledger_index: Number(N) });
+  return (r.result.ledger && r.result.ledger.ledger_hash) || r.result.ledger_hash || null;
+}
+// a battle lives entirely in three memo'd Payments on the issuer: challenge (tx hash = battleId), accept, result.
+async function loadBattle(c, issuer, battleId) {
+  const out = { battleId, challenge: null, accept: null, result: null };
+  let marker, scanned = 0;
+  do {
+    const r = await c.request({ command: 'account_tx', account: issuer, limit: 200, forward: true, marker });
+    for (const t of r.result.transactions) {
+      const tx = t.tx || t.tx_json || {}; if (tx.TransactionType !== 'Payment') continue;
+      const hash = tx.hash || t.hash || ''; const lseq = tx.ledger_index || t.ledger_index;
+      for (const m of (tx.Memos || [])) {
+        const md = m.Memo || {};
+        try {
+          if (unhex(md.MemoType || '') !== BATTLE_MEMO) continue;
+          const f = unhex(md.MemoData || '').split('|'), kind = f[0];
+          if (kind === 'challenge' && hash === battleId) out.challenge = { aNid: f[1], stakeDrops: f[2], N: Number(f[3]), ownerA: tx.Account, amount: tx.Amount, lseq };
+          else if (kind === 'accept' && f[1] === battleId) out.accept = { bNid: f[2], ownerB: tx.Account, amount: tx.Amount, lseq };
+          else if (kind === 'result' && f[1] === battleId) out.result = { winnerNid: f[2], scoreA: Number(f[3]), scoreB: Number(f[4]), rv: f[5], dest: tx.Destination, lseq };
+        } catch { /* skip malformed memo */ }
+      }
+    }
+    marker = r.result.marker; scanned += r.result.transactions.length;
+  } while (marker && scanned < 8000);
+  return out;
+}
+// resolve (admin, idempotent): re-derive the winner from the pinned ledger hash + open rules, pay the winner, mint a card.
+async function resolveBattleTx(c, w, battleId) {
+  const issuer = w.classicAddress;
+  const b = await loadBattle(c, issuer, battleId);
+  if (!b.challenge) return { error: 'battle not found', battleId };
+  if (!b.accept) return { status: 'OPEN', error: 'not accepted yet' };
+  if (b.result) return { status: 'ALREADY_RESOLVED', result: b.result };     // idempotent — never double-pay
+  const { aNid, N } = b.challenge, { bNid } = b.accept;
+  const lh = await ledgerHashOf(c, N);
+  if (!lh) return { error: 'pinned ledger not validated yet', N };
+  const seed = seedFor(lh, battleId, aNid, bNid);
+  const hA = await loadHistory(c, issuer, aNid), hB = await loadHistory(c, issuer, bNid);
+  if (!hA.genesis || !hB.genesis) return { error: 'a pet in this battle was not found' };
+  const sA = stateAtLedger(hA.genesis, hA.interactions, N), sB = stateAtLedger(hB.genesis, hB.interactions, N);
+  const d = BR.resolveBattle(seed, sA, sB, aNid, bNid);
+  const winnerNid = d.winner === null ? 'DRAW' : d.winner;
+  // Stake is authoritative from the challenge memo (accept must match, enforced by /battle/accept). Both parties
+  // paid `stake` to the issuer, so pot = stake*2. (Avoids relying on account_tx Amount echoes.)
+  const stake = Number(b.challenge.stakeDrops || 0);
+  const pot = stake * 2;
+  const fee = Math.floor(pot * BATTLE_FEE_BPS / 10000);
+  const resultMemo = [{ Memo: { MemoType: hex(BATTLE_MEMO), MemoData: hex(['result', battleId, winnerNid, d.scoreA, d.scoreB, RULESET_VERSION].join('|')) } }];
+  let payout;
+  if (d.winner === null) {                                                    // draw → refund both, carry result memo
+    await submit(c, w, { TransactionType: 'Payment', Account: issuer, Destination: b.challenge.ownerA, Amount: '1', Memos: resultMemo });
+    if (stake > 1) { await submit(c, w, { TransactionType: 'Payment', Account: issuer, Destination: b.challenge.ownerA, Amount: String(stake) });
+      await submit(c, w, { TransactionType: 'Payment', Account: issuer, Destination: b.accept.ownerB, Amount: String(stake) }); }
+    payout = { winner: 'DRAW', refunded: true };
+  } else {
+    const winnerOwner = d.winner === aNid ? sA.owner : sB.owner;
+    const amount = String(Math.max(1, pot - fee));
+    const rr = await submit(c, w, { TransactionType: 'Payment', Account: issuer, Destination: winnerOwner, Amount: amount, Memos: resultMemo });
+    payout = { winner: winnerNid, winnerOwner, paidDrops: amount, feeDrops: fee, result: rr };
+  }
+  let card;                                                                   // cosmetic soulbound "battle card" keepsake
+  try {
+    const cp = await c.autofill(tag({ TransactionType: 'NFTokenMint', Account: issuer, NFTokenTaxon: BATTLE_TAXON, Flags: 0,
+      URI: hex(JSON.stringify({ t: 'btl', i: battleId.slice(0, 32), w: (d.winner || 'DRAW').slice(0, 24), N })) }));
+    const cr = (await c.submitAndWait(w.sign(cp).tx_blob)).result;
+    card = { nid: cr.meta.nftoken_id, result: cr.meta.TransactionResult };
+  } catch (e) { card = { error: e.message }; }
+  return { battleId, winner: winnerNid, scoreA: d.scoreA, scoreB: d.scoreB, rollA: d.rollA, rollB: d.rollB, powerA: d.powerA, powerB: d.powerB, seed, pot, fee, payout, card };
+}
+// verify (public): re-derive winner + scores from the pinned ledger + open rules; confirm the payout went to the winner.
+async function verifyBattle(c, issuer, battleId) {
+  const b = await loadBattle(c, issuer, battleId);
+  if (!b.challenge) return { ok: false, verdict: 'NOT_FOUND', reason: 'no challenge with this id' };
+  if (!b.accept) return { ok: false, verdict: 'OPEN', reason: 'not accepted yet' };
+  if (!b.result) return { ok: false, verdict: 'UNRESOLVED', reason: 'not resolved yet' };
+  const { aNid, N } = b.challenge, { bNid } = b.accept;
+  const lh = await ledgerHashOf(c, N);
+  if (!lh) return { ok: false, verdict: 'ERROR', reason: 'pinned ledger not available' };
+  const seed = seedFor(lh, battleId, aNid, bNid);
+  const hA = await loadHistory(c, issuer, aNid), hB = await loadHistory(c, issuer, bNid);
+  const sA = stateAtLedger(hA.genesis, hA.interactions, N), sB = stateAtLedger(hB.genesis, hB.interactions, N);
+  const d = BR.resolveBattle(seed, sA, sB, aNid, bNid);
+  const derivedWinner = d.winner === null ? 'DRAW' : d.winner;
+  const winnerMatch = derivedWinner === b.result.winnerNid;
+  const scoresMatch = d.scoreA === b.result.scoreA && d.scoreB === b.result.scoreB;
+  const winnerOwner = d.winner === aNid ? sA.owner : d.winner === bNid ? sB.owner : null;
+  const paidRight = d.winner === null || b.result.dest === winnerOwner;
+  const ok = winnerMatch && scoresMatch && paidRight;
+  return { ok, verdict: ok ? 'PASS' : 'FAIL', battleId, N, seed,
+    derived: { winner: derivedWinner, scoreA: d.scoreA, scoreB: d.scoreB, winnerOwner }, recorded: b.result,
+    reason: ok ? 'winner + scores re-derive from the pinned ledger hash and the open rules; payout went to the winner'
+      : !winnerMatch ? 'recorded winner does not match a faithful replay'
+      : !scoresMatch ? 'recorded scores do not match the replay' : 'payout did not go to the derived winner' };
+}
+
+// challenge → returns an UNSIGNED stake Payment (owner signs via Xaman). Pins a future ledger N for the seed.
+app.post('/battle/challenge', async (req, res) => {
+  const { owner, aNid, stakeXrp, N } = req.body || {};
+  if (!owner || !aNid) return res.status(400).json({ error: 'owner + aNid required' });
+  if (!xrpl.isValidClassicAddress(owner)) return res.status(400).json({ error: 'invalid owner address' });
+  try {
+    const out = await withClient(async (c, w) => {
+      const issuer = w.classicAddress;
+      const ps = await readState(c, issuer, aNid);
+      if (!ps) return { error: 'pet not found' };
+      if (ps.owner !== owner) return { error: 'you do not own this pet' };
+      if (ps.alive === 0) return { error: 'a passed pet cannot battle' };
+      const cur = (await c.request({ command: 'ledger', ledger_index: 'validated' })).result.ledger_index;
+      const targetN = Number.isInteger(Number(N)) && Number(N) >= cur + BATTLE_LEDGER_MARGIN ? Number(N) : cur + BATTLE_LEDGER_MARGIN;
+      const drops = stakeXrp ? xrpl.xrpToDrops(stakeXrp) : '1';   // 0-stake friendly = 1 drop to carry the memo
+      return { unsignedTx: tag({ TransactionType: 'Payment', Account: owner, Destination: issuer, Amount: String(drops),
+          Memos: [{ Memo: { MemoType: hex(BATTLE_MEMO), MemoData: hex(['challenge', aNid, String(drops), String(targetN)].join('|')) } }] }),
+        signWith: 'owner (Xaman)', pinnedLedger: targetN, currentLedger: cur,
+        note: 'battleId = this Payment tx hash after it validates; share it so an opponent can POST /battle/accept' };
+    });
+    if (out.error) return res.status(400).json(out);
+    res.json(out);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// accept → returns an UNSIGNED matching-stake Payment (opponent signs via Xaman).
+app.post('/battle/accept', async (req, res) => {
+  const { owner, battleId, bNid } = req.body || {};
+  if (!owner || !battleId || !bNid) return res.status(400).json({ error: 'owner + battleId + bNid required' });
+  if (!xrpl.isValidClassicAddress(owner)) return res.status(400).json({ error: 'invalid owner address' });
+  try {
+    const out = await withClient(async (c, w) => {
+      const issuer = w.classicAddress;
+      const b = await loadBattle(c, issuer, battleId);
+      if (!b.challenge) return { error: 'unknown battleId' };
+      if (b.accept) return { error: 'already accepted' };
+      if (bNid === b.challenge.aNid) return { error: 'a pet cannot battle itself' };
+      const ps = await readState(c, issuer, bNid);
+      if (!ps) return { error: 'pet not found' };
+      if (ps.owner !== owner) return { error: 'you do not own this pet' };
+      if (ps.alive === 0) return { error: 'a passed pet cannot battle' };
+      const drops = b.challenge.amount || '1';   // must match the challenger's stake
+      return { unsignedTx: tag({ TransactionType: 'Payment', Account: owner, Destination: issuer, Amount: String(drops),
+          Memos: [{ Memo: { MemoType: hex(BATTLE_MEMO), MemoData: hex(['accept', battleId, bNid].join('|')) } }] }),
+        signWith: 'owner (Xaman)', matchStakeDrops: String(drops) };
+    });
+    if (out.error) return res.status(400).json(out);
+    res.json(out);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// resolve (admin) · status (public) · verify (public — the fairness proof)
+app.post('/battle/resolve', requireAdmin, async (req, res) => {
+  const { battleId } = req.body || {};
+  if (!battleId) return res.status(400).json({ error: 'battleId required' });
+  try { res.json(await withClient((c, w) => resolveBattleTx(c, w, battleId))); }
+  catch (e) { res.status(500).json({ error: e.message }); }
+});
+app.get('/battle/:battleId', async (req, res) => {
+  try {
+    const b = await withClient((c, w) => loadBattle(c, w.classicAddress, req.params.battleId));
+    res.json({ status: !b.challenge ? 'NOT_FOUND' : b.result ? 'RESOLVED' : b.accept ? 'LIVE' : 'OPEN', ...b });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+app.get('/verify-battle/:battleId', async (req, res) => {
+  try { res.json(await withClient((c, w) => verifyBattle(c, w.classicAddress, req.params.battleId))); }
+  catch (e) { res.status(500).json({ ok: false, verdict: 'ERROR', reason: e.message }); }
+});
+
 // interact: verify the signed Payment, apply rules, NFTokenModify
 app.post('/interact', requireAdmin, async (req, res) => {
   const { uuid, nid } = req.body;
@@ -462,7 +646,8 @@ app.post('/broker-sale', requireAdmin, async (req, res) => {
 
 // export the issuer primitives so a harness can drive the logic without starting a server.
 module.exports = { app, withClient, readState, submit, verifyPet, replay, enc, dec, hex, unhex, R, TAXON, TF_MUTABLE_TRANSFERABLE, ROYALTY_BPS, ENDPOINT,
-  A, loadHistory, encAch, decAch, listAchievements, claimAchievements, verifyAchievement, ACHIEVEMENT_TAXON, RULESET_VERSION };
+  A, loadHistory, encAch, decAch, listAchievements, claimAchievements, verifyAchievement, ACHIEVEMENT_TAXON, RULESET_VERSION,
+  BR, seedFor, stateAtLedger, loadBattle, resolveBattleTx, verifyBattle, ledgerHashOf, BATTLE_TAXON, BATTLE_FEE_BPS, BATTLE_LEDGER_MARGIN, BATTLE_MEMO };
 
 if (require.main === module) {
   const PORT = process.env.PORT || 8788;
