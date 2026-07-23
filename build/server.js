@@ -190,10 +190,18 @@ function replay(genesis, interactions) {
 // verifier AND the achievements projection so both replay the exact same inputs.
 async function loadHistory(c, issuer, nid) {
   const current = await readState(c, issuer, nid);
+  // Bound the scan to the pet's own lifetime: its genesis mint is at ledger `birth` and every interaction is
+  // after it, so ledger_index_min = birth guarantees we never miss genesis AND never truncate history — the
+  // arbitrary count cap is gone (it silently caused false NO_GENESIS/DIVERGED as issuer volume grew). This also
+  // avoids re-scanning the issuer's entire history for every verify/reconcile. (Optimization for extreme scale:
+  // maintain a per-nid tx index; for hackathon volume the birth-bounded window is fine.)
+  const minLedger = current && Number.isInteger(current.birth) ? current.birth : null;
   let genesis = null; const interactions = [];
-  let marker, scanned = 0;
+  let marker;
   do {
-    const r = await c.request({ command: 'account_tx', account: issuer, limit: 200, forward: true, marker });
+    const req = { command: 'account_tx', account: issuer, limit: 200, forward: true, marker };
+    if (minLedger != null) req.ledger_index_min = minLedger;
+    const r = await c.request(req);
     for (const t of r.result.transactions) {
       const tx = t.tx || t.tx_json || {};
       const lseq = tx.ledger_index || t.ledger_index;
@@ -211,8 +219,8 @@ async function loadHistory(c, issuer, nid) {
         }
       }
     }
-    marker = r.result.marker; scanned += r.result.transactions.length;
-  } while (marker && scanned < 5000);
+    marker = r.result.marker;
+  } while (marker);
   interactions.sort((a, b) => a[1] - b[1]);
   return { current, genesis, interactions };
 }
@@ -339,7 +347,7 @@ async function ledgerHashOf(c, N) {
 // a battle lives entirely in three memo'd Payments on the issuer: challenge (tx hash = battleId), accept, result.
 async function loadBattle(c, issuer, battleId) {
   const out = { battleId, challenge: null, accept: null, result: null };
-  let marker, scanned = 0;
+  let marker;   // full pagination (no count cap) — battles are low-frequency; correctness over a bounded scan
   do {
     const r = await c.request({ command: 'account_tx', account: issuer, limit: 200, forward: true, marker });
     for (const t of r.result.transactions) {
@@ -356,8 +364,8 @@ async function loadBattle(c, issuer, battleId) {
         } catch { /* skip malformed memo */ }
       }
     }
-    marker = r.result.marker; scanned += r.result.transactions.length;
-  } while (marker && scanned < 8000);
+    marker = r.result.marker;
+  } while (marker);
   return out;
 }
 // resolve (admin, idempotent): re-derive the winner from the pinned ledger hash + open rules, pay the winner, mint a card.
