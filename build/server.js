@@ -54,6 +54,15 @@ const BATTLE_FEE_BPS = Number(process.env.BATTLE_FEE_BPS || 500);        // plat
 // Challenger pins a FUTURE ledger N >= now + margin so its hash is unknowable at commit (unbiasable seed).
 const BATTLE_LEDGER_MARGIN = Number(process.env.BATTLE_LEDGER_MARGIN || 20);
 const BATTLE_MEMO = 'ledgerlings/battle';
+// House ladder: PUBLISHED NPC opponents (open stat blocks, versioned). Because the opponent's stats are public
+// + fixed, a ladder battle is as provably-fair as PvP — the seed is still the pinned ledger hash and
+// verify-battle re-derives the winner from (player history @N, the published NPC block, seed). Free (no wager).
+const LADDER = [
+  { id: 'runt',     name: 'Scrappy Runt',      stats: { stage: 1, form: 1, care: 20,  care_max: 40,  health: 70, alive: 1 } },
+  { id: 'sparring', name: 'Sparring Partner',  stats: { stage: 2, form: 2, care: 60,  care_max: 80,  health: 85, alive: 1 } },
+  { id: 'veteran',  name: 'Grizzled Veteran',  stats: { stage: 3, form: 3, care: 150, care_max: 180, health: 92, alive: 1 } },
+  { id: 'champion', name: 'Ladder Champion',   stats: { stage: 4, form: 4, care: 230, care_max: 240, health: 98, alive: 1 } },
+];
 // SECURITY: all mint/write endpoints require this admin token (fail-closed). No anon minting from the
 // issuer. ALLOWED_ORIGIN locks CORS. Set both in the host env.
 const ADMIN_TOKEN = process.env.ADMIN_TOKEN || '';
@@ -359,6 +368,7 @@ async function loadBattle(c, issuer, battleId) {
           if (unhex(md.MemoType || '') !== BATTLE_MEMO) continue;
           const f = unhex(md.MemoData || '').split('|'), kind = f[0];
           if (kind === 'challenge' && hash === battleId) out.challenge = { aNid: f[1], stakeDrops: f[2], N: Number(f[3]), ownerA: tx.Account, delivered: (t.meta && t.meta.delivered_amount) || tx.Amount, lseq };
+          else if (kind === 'ladder' && hash === battleId) out.challenge = { aNid: f[1], rung: Number(f[2]), N: Number(f[3]), ownerA: tx.Account, npc: true, lseq };
           else if (kind === 'accept' && f[1] === battleId) out.accept = { bNid: f[2], ownerB: tx.Account, delivered: (t.meta && t.meta.delivered_amount) || tx.Amount, lseq };
           else if (kind === 'result' && f[1] === battleId) out.result = { winnerNid: f[2], scoreA: Number(f[3]), scoreB: Number(f[4]), rv: f[5], dest: tx.Destination, lseq };
         } catch { /* skip malformed memo */ }
@@ -369,12 +379,40 @@ async function loadBattle(c, issuer, battleId) {
   return out;
 }
 // resolve (admin, idempotent): re-derive the winner from the pinned ledger hash + open rules, pay the winner, mint a card.
+// ladder (vs a published house NPC): no accept, no wager. Free, provably fair, solo-climbable.
+async function resolveLadder(c, w, battleId, b) {
+  const issuer = w.classicAddress;
+  const { aNid, rung, N, ownerA } = b.challenge;
+  const npc = LADDER[rung];
+  if (!npc) return { error: 'invalid ladder rung', rung };
+  const lh = await ledgerHashOf(c, N);
+  if (!lh) return { error: 'pinned ledger not validated yet', N };
+  const npcId = 'NPC:' + npc.id;
+  const seed = seedFor(lh, battleId, aNid, npcId);
+  const h = await loadHistory(c, issuer, aNid);
+  if (!h.genesis) return { error: 'pet not found' };
+  const sA = stateAtLedger(h.genesis, h.interactions, N);
+  const d = BR.resolveBattle(seed, sA, npc.stats, aNid, npcId);
+  const winnerNid = d.winner === null ? 'DRAW' : d.winner, playerWon = d.winner === aNid;
+  const resultMemo = [{ Memo: { MemoType: hex(BATTLE_MEMO), MemoData: hex(['result', battleId, winnerNid, d.scoreA, d.scoreB, RULESET_VERSION].join('|')) } }];
+  await submit(c, w, { TransactionType: 'Payment', Account: issuer, Destination: ownerA, Amount: '1', Memos: resultMemo });   // 1-drop carries the result
+  let card;
+  if (playerWon) { try {
+    const cp = await c.autofill(tag({ TransactionType: 'NFTokenMint', Account: issuer, NFTokenTaxon: BATTLE_TAXON, Flags: 0,
+      URI: hex(JSON.stringify({ t: 'btl', i: battleId.slice(0, 32), w: aNid.slice(0, 24), N, npc: npc.id })) }));
+    const cr = (await c.submitAndWait(w.sign(cp).tx_blob)).result; card = { nid: cr.meta.nftoken_id, result: cr.meta.TransactionResult };
+  } catch (e) { card = { error: e.message }; } }
+  return { battleId, ladder: true, opponent: npc.name, rung, winner: playerWon ? 'player' : (d.winner === null ? 'DRAW' : 'NPC'),
+    scoreA: d.scoreA, scoreB: d.scoreB, rollA: d.rollA, rollB: d.rollB, powerA: d.powerA, powerB: d.powerB, seed, card };
+}
+
 async function resolveBattleTx(c, w, battleId) {
   const issuer = w.classicAddress;
   const b = await loadBattle(c, issuer, battleId);
   if (!b.challenge) return { error: 'battle not found', battleId };
-  if (!b.accept) return { status: 'OPEN', error: 'not accepted yet' };
   if (b.result) return { status: 'ALREADY_RESOLVED', result: b.result };     // idempotent — never double-pay
+  if (b.challenge.npc) return resolveLadder(c, w, battleId, b);               // ladder path (no accept/wager)
+  if (!b.accept) return { status: 'OPEN', error: 'not accepted yet' };
   const { aNid, N } = b.challenge, { bNid } = b.accept;
   const lh = await ledgerHashOf(c, N);
   if (!lh) return { error: 'pinned ledger not validated yet', N };
@@ -423,6 +461,19 @@ async function resolveBattleTx(c, w, battleId) {
 async function verifyBattle(c, issuer, battleId) {
   const b = await loadBattle(c, issuer, battleId);
   if (!b.challenge) return { ok: false, verdict: 'NOT_FOUND', reason: 'no challenge with this id' };
+  if (b.challenge.npc) {   // ladder: opponent stats come from the PUBLISHED NPC table (that is why it stays provably fair)
+    if (!b.result) return { ok: false, verdict: 'UNRESOLVED', reason: 'not resolved yet' };
+    const { aNid, rung, N } = b.challenge, npc = LADDER[rung];
+    if (!npc) return { ok: false, verdict: 'BAD_RUNG', reason: 'invalid ladder rung' };
+    const lh = await ledgerHashOf(c, N); if (!lh) return { ok: false, verdict: 'ERROR', reason: 'pinned ledger not available' };
+    const npcId = 'NPC:' + npc.id, seed = seedFor(lh, battleId, aNid, npcId);
+    const h = await loadHistory(c, issuer, aNid), sA = stateAtLedger(h.genesis, h.interactions, N);
+    const d = BR.resolveBattle(seed, sA, npc.stats, aNid, npcId), derivedWinner = d.winner === null ? 'DRAW' : d.winner;
+    const ok = derivedWinner === b.result.winnerNid && d.scoreA === b.result.scoreA && d.scoreB === b.result.scoreB;
+    return { ok, verdict: ok ? 'PASS' : 'FAIL', battleId, ladder: true, opponent: npc.name,
+      derived: { winner: derivedWinner, scoreA: d.scoreA, scoreB: d.scoreB }, recorded: b.result,
+      reason: ok ? 'ladder result re-derives from the pinned ledger hash + the published NPC stats + open rules' : 'recorded ladder result does not match a faithful replay' };
+  }
   if (!b.accept) return { ok: false, verdict: 'OPEN', reason: 'not accepted yet' };
   if (!b.result) return { ok: false, verdict: 'UNRESOLVED', reason: 'not resolved yet' };
   if (b.result.winnerNid === 'VOID') {   // battle was voided for underpayment; refunds are on-ledger + checkable
@@ -521,6 +572,66 @@ app.get('/battle/:battleId', async (req, res) => {
 app.get('/verify-battle/:battleId', async (req, res) => {
   try { res.json(await withClient((c, w) => verifyBattle(c, w.classicAddress, req.params.battleId))); }
   catch (e) { res.status(500).json({ ok: false, verdict: 'ERROR', reason: e.message }); }
+});
+
+// ladder: the PUBLISHED house-NPC roster (opponents are public + fixed → provably fair). Auditable.
+app.get('/ladder', (req, res) => {
+  res.json({ rulesetVersion: RULESET_VERSION, rungs: LADDER.map((n, i) => ({ rung: i, id: n.id, name: n.name, stats: n.stats, power: BR.power(n.stats) })) });
+});
+// ladder challenge → unsigned 0-stake Payment (owner signs via Xaman). Then POST /battle/resolve after ledger N.
+app.post('/battle/ladder', async (req, res) => {
+  const { owner, aNid, rung } = req.body || {};
+  if (!owner || aNid === undefined || rung === undefined) return res.status(400).json({ error: 'owner + aNid + rung required' });
+  if (!xrpl.isValidClassicAddress(owner)) return res.status(400).json({ error: 'invalid owner address' });
+  if (!LADDER[rung]) return res.status(400).json({ error: 'invalid rung (see GET /ladder)' });
+  try {
+    const out = await withClient(async (c, w) => {
+      const issuer = w.classicAddress, ps = await readState(c, issuer, aNid);
+      if (!ps) return { error: 'pet not found' };
+      if (ps.owner !== owner) return { error: 'you do not own this pet' };
+      if (ps.alive === 0) return { error: 'a passed pet cannot battle' };
+      const cur = (await c.request({ command: 'ledger', ledger_index: 'validated' })).result.ledger_index;
+      const N = cur + BATTLE_LEDGER_MARGIN;
+      return { unsignedTx: tag({ TransactionType: 'Payment', Account: owner, Destination: issuer, Amount: '1',
+          Memos: [{ Memo: { MemoType: hex(BATTLE_MEMO), MemoData: hex(['ladder', aNid, String(rung), String(N)].join('|')) } }] }),
+        signWith: 'owner (Xaman)', opponent: LADDER[rung].name, pinnedLedger: N,
+        note: 'battleId = this tx hash; after ledger N POST /battle/resolve to fight the house NPC (free, provably fair)' };
+    });
+    if (out.error) return res.status(400).json(out);
+    res.json(out);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+// a pet's ladder progression — wins, current win-streak, highest rung beaten (all re-derivable from ledger).
+app.get('/ladder-rank/:nid', async (req, res) => {
+  try {
+    const out = await withClient(async (c, w) => {
+      const issuer = w.classicAddress, nid = req.params.nid;
+      const cur = await readState(c, issuer, nid), minL = cur && Number.isInteger(cur.birth) ? cur.birth : null;
+      const battles = []; let marker;
+      do {
+        const rq = { command: 'account_tx', account: issuer, limit: 200, forward: true, marker };
+        if (minL != null) rq.ledger_index_min = minL;
+        const r = await c.request(rq);
+        for (const t of r.result.transactions) {
+          const tx = t.tx || t.tx_json || {}; if (tx.TransactionType !== 'Payment') continue;
+          const hash = tx.hash || t.hash, lseq = tx.ledger_index || t.ledger_index;
+          for (const m of (tx.Memos || [])) {
+            const md = m.Memo || {};
+            try { if (unhex(md.MemoType || '') !== BATTLE_MEMO) continue; const f = unhex(md.MemoData || '').split('|');
+              if (f[0] === 'ladder' && f[1] === nid && hash) battles.push({ battleId: hash, rung: Number(f[2]), lseq, win: null });
+              else if (f[0] === 'result') { const bb = battles.find(x => x.battleId === f[1]); if (bb) bb.win = f[2] === nid; }
+            } catch { /* skip */ }
+          }
+        }
+        marker = r.result.marker;
+      } while (marker);
+      battles.sort((a, b) => a.lseq - b.lseq);
+      let wins = 0, streak = 0, best = -1;
+      for (const b of battles) { if (b.win) { wins++; streak++; best = Math.max(best, b.rung); } else if (b.win === false) streak = 0; }
+      return { nid, resolved: battles.filter(b => b.win !== null).length, wins, currentStreak: streak, highestRungBeaten: best, highestRungName: best >= 0 ? LADDER[best].name : null };
+    });
+    res.json(out);
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // interact: verify the signed Payment, apply rules, NFTokenModify
@@ -862,7 +973,7 @@ try{const v=await(await fetch('/verify/${esc(nid)}')).json();o.innerHTML=v.verdi
 module.exports = { app, withClient, readState, submit, verifyPet, replay, enc, dec, hex, unhex, R, TAXON, TF_MUTABLE_TRANSFERABLE, ROYALTY_BPS, ENDPOINT,
   A, loadHistory, encAch, decAch, listAchievements, claimAchievements, verifyAchievement, ACHIEVEMENT_TAXON, RULESET_VERSION,
   BR, seedFor, stateAtLedger, loadBattle, resolveBattleTx, verifyBattle, ledgerHashOf, BATTLE_TAXON, BATTLE_FEE_BPS, BATTLE_LEDGER_MARGIN, BATTLE_MEMO,
-  reconcilePet, pollerTick, startPoller, allIssuerNfts, genCardSvg, careRatio };
+  reconcilePet, pollerTick, startPoller, allIssuerNfts, genCardSvg, careRatio, LADDER, resolveLadder };
 
 if (require.main === module) {
   const PORT = process.env.PORT || 8788;
