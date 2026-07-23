@@ -68,6 +68,7 @@
     <button class="btn" id="danceBtn">💃<small>dance</small></button>
   </div>
   <div id="verify">🔎 Verify my pet — prove the game played fair</div>
+  <div id="share" style="margin-top:8px;padding:9px;border:1px solid var(--glow);border-radius:10px;background:#0e3a4a;color:var(--hot);cursor:pointer;display:none">🔗 Share my Ledgerling</div>
   <div id="foot">on XRPL · pet = a Dynamic NFT · every rule is open &amp; re-checkable</div>
   <div id="foot" style="margin-top:8px"><a href="canvas.html" style="color:#00ff66;text-decoration:none">🎨 Collaborators: design an accessory →</a> earn a 5% royalty on every resale</div>
 </div>
@@ -287,6 +288,9 @@ document.querySelectorAll('[data-op]').forEach(b=>b.onclick=async ()=>{
     if(a&&a.nid){ petNid=a.nid; if(a.state) pet=a.state; }
     toast('connected: '+OWNER.slice(0,8)+'…');
     await syncLedger(); setInterval(syncLedger,30000);     // real ledger for cooldown gray-out
+    const BK=window.LEDGERLINGS_BACKEND||'';               // shareable public pet page (the viral loop)
+    if(petNid&&BK){ const sh=document.getElementById('share'); sh.style.display='block';
+      sh.onclick=()=>window.open(BK+'/p/'+petNid,'_blank'); }
   }
 })();
 

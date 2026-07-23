@@ -739,11 +739,130 @@ async function startPoller() {
   setTimeout(loop, 6000);
 }
 
+// ---- Shareable pet card + public gallery (the viral loop) ----
+const APP_URL = process.env.APP_URL || 'https://hugegreencandle.github.io/ledgerlings/';
+const esc = s => String(s == null ? '' : s).replace(/[&<>"]/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[ch]));
+const shortNid = nid => `${String(nid).slice(0, 6)}…${String(nid).slice(-4)}`;
+function careRatio(s) { return s.care_max > 0 ? Math.max(0, Math.min(1, s.care / s.care_max)) : 0; }
+// dep-free SVG card (600x315, X-card ratio) — a little bear-ish Ledgerling colored by health, aura by rarity/form.
+function genCardSvg(s, nid) {
+  const stage = R.STAGE[s.stage] || 'egg', form = R.FORM[s.form] || '-';
+  const dead = s.alive === 0;
+  const body = dead ? '#5b6b72' : `hsl(${Math.round((s.health || 0) * 1.2)},62%,58%)`;
+  const aura = s.form === 4 ? '#ffd24a' : s.form === 3 ? '#c98cff' : s.form === 2 ? '#6ff0ff' : '#3fae86';
+  const scale = 0.55 + Math.min(4, s.stage) * 0.11;
+  const cx = 165, cy = 150;
+  const pct = Math.round(careRatio(s) * 100);
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="600" height="315" viewBox="0 0 600 315">
+  <defs><radialGradient id="bg" cx="30%" cy="35%" r="90%"><stop offset="0%" stop-color="#0e3a4a"/><stop offset="100%" stop-color="#05141a"/></radialGradient></defs>
+  <rect width="600" height="315" fill="url(#bg)"/>
+  <circle cx="${cx}" cy="${cy}" r="${92 * scale}" fill="none" stroke="${aura}" stroke-width="3" opacity="0.6"/>
+  <g transform="translate(${cx},${cy}) scale(${scale})">
+    <circle cx="-42" cy="-52" r="22" fill="${body}"/><circle cx="42" cy="-52" r="22" fill="${body}"/>
+    <circle cx="0" cy="0" r="70" fill="${body}"/>
+    <circle cx="-26" cy="-8" r="9" fill="#0b1e26"/><circle cx="26" cy="-8" r="9" fill="#0b1e26"/>
+    <ellipse cx="0" cy="20" rx="14" ry="10" fill="#0b1e26"/>
+    ${dead ? '<text x="0" y="-2" font-size="34" text-anchor="middle" fill="#0b1e26">✕</text>' : ''}
+  </g>
+  <text x="315" y="70" font-family="system-ui,sans-serif" font-size="30" font-weight="700" fill="#6ff0ff">Ledgerling</text>
+  <text x="315" y="100" font-family="monospace" font-size="15" fill="#8fb3bd">${esc(shortNid(nid))}</text>
+  <text x="315" y="146" font-family="system-ui,sans-serif" font-size="20" fill="#eaf6f9">${esc(stage)}${dead ? ' · passed' : ''}</text>
+  <text x="315" y="174" font-family="system-ui,sans-serif" font-size="17" fill="${aura}">form: ${esc(form)}</text>
+  <text x="315" y="206" font-family="system-ui,sans-serif" font-size="15" fill="#8fb3bd">care ${s.care} · quality ${pct}%</text>
+  <text x="315" y="250" font-family="system-ui,sans-serif" font-size="15" fill="#7CFFB2">✅ provably fair — verify on XRPL</text>
+  <text x="315" y="286" font-family="system-ui,sans-serif" font-size="13" fill="#5f7d86">Ledgerlings · a pet you can audit</text>
+</svg>`;
+}
+app.get('/card/:nid.svg', async (req, res) => {
+  try {
+    const s = await withClient((c, w) => readState(c, w.classicAddress, req.params.nid));
+    if (!s) return res.status(404).type('text/plain').send('pet not found');
+    res.type('image/svg+xml').set('Cache-Control', 'public, max-age=60').send(genCardSvg(s, req.params.nid));
+  } catch (e) { res.status(500).type('text/plain').send(e.message); }
+});
+// public gallery — all living pets ranked by care (best-cared first). No login.
+app.get('/gallery', async (req, res) => {
+  try {
+    const out = await withClient(async (c, w) => (await allIssuerNfts(c, w.classicAddress))
+      .filter(n => n.NFTokenTaxon === TAXON && n.URI)
+      .map(n => { let s; try { s = dec(n.URI); } catch { return null; } return s && { nid: n.NFTokenID, owner: s.owner, stage: R.STAGE[s.stage] || s.stage, form: R.FORM[s.form] || '-', formId: s.form, care: s.care, quality: Math.round(careRatio(s) * 100), health: s.health, alive: s.alive }; })
+      .filter(Boolean));
+    out.sort((a, b) => (b.alive - a.alive) || (b.care - a.care) || (b.formId - a.formId));
+    res.set('Cache-Control', 'public, max-age=30').json({ count: out.length, pets: out });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+// public gallery page — best-cared leaderboard grid, each linking to its shareable pet page. No login.
+app.get('/gallery.html', (req, res) => {
+  res.type('text/html').send(`<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>Ledgerlings — Gallery</title>
+<meta name="description" content="Every Ledgerling, ranked by care. Provably fair on the XRPL.">
+<style>body{margin:0;background:#05141a;color:#eaf6f9;font-family:system-ui,sans-serif}
+.wrap{max-width:1000px;margin:0 auto;padding:24px}h1{color:#6ff0ff;margin:0}
+.sub{color:#8fb3bd;margin:6px 0 18px}a.cta{display:inline-block;margin:0 0 18px;padding:11px 18px;border-radius:10px;
+border:1px solid #6ff0ff;background:#0e3a4a;color:#6ff0ff;text-decoration:none}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:14px}
+.card{border:1px solid #14414f;border-radius:14px;overflow:hidden;text-decoration:none;color:inherit;background:#08222b;transition:transform .1s}
+.card:hover{transform:translateY(-2px);border-color:#6ff0ff}.card img{width:100%;display:block}
+.meta{padding:10px 12px;font-size:13px;color:#8fb3bd}.meta b{color:#6ff0ff}.rank{color:#ffd24a;font-weight:700}</style></head>
+<body><div class="wrap"><h1>🏆 Ledgerlings Gallery</h1>
+<div class="sub">Every pet, ranked by care. Each one's whole life re-derives from the XRPL — click through and verify.</div>
+<a class="cta" href="${esc(APP_URL)}">🐾 Adopt your own Ledgerling</a>
+<div id="grid" class="grid"></div>
+<script>fetch('/gallery').then(r=>r.json()).then(d=>{
+  const g=document.getElementById('grid');
+  if(!d.pets||!d.pets.length){g.innerHTML='<div style="color:#8fb3bd">No pets yet — be the first to adopt.</div>';return;}
+  g.innerHTML=d.pets.slice(0,60).map((p,i)=>'<a class=card href="/p/'+p.nid+'"><img loading=lazy src="/card/'+p.nid+'.svg" alt="Ledgerling"><div class=meta><span class=rank>#'+(i+1)+'</span> · <b>'+p.stage+'</b>'+(p.form!=='-'?' · '+p.form:'')+'<br>care <b>'+p.care+'</b> · quality <b>'+p.quality+'%</b>'+(p.alive?'':' · passed')+'</div></a>').join('');
+}).catch(e=>{document.getElementById('grid').textContent='Could not load the gallery.';});</script>
+</div></body></html>`);
+});
+
+// public shareable pet page — OG preview (the card), live stats, Verify, and an Adopt CTA. No login.
+app.get('/p/:nid', async (req, res) => {
+  try {
+    const nid = req.params.nid;
+    const s = await withClient((c, w) => readState(c, w.classicAddress, nid));
+    if (!s) return res.status(404).type('text/html').send('<h1>Ledgerling not found</h1>');
+    const stage = R.STAGE[s.stage] || 'egg', form = R.FORM[s.form] || '-';
+    const base = `${req.protocol}://${req.get('host')}`;
+    const card = `${base}/card/${esc(nid)}.svg`;
+    const title = `Ledgerling ${shortNid(nid)} — ${esc(stage)}${s.form ? ' · ' + esc(form) : ''}`;
+    const desc = `A provably-fair on-chain pet. care ${s.care} (${Math.round(careRatio(s) * 100)}%). Its whole life re-derives from the XRPL — verify it yourself.`;
+    res.type('text/html').send(`<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>${esc(title)}</title>
+<meta name="description" content="${esc(desc)}">
+<meta property="og:type" content="website"><meta property="og:title" content="${esc(title)}">
+<meta property="og:description" content="${esc(desc)}"><meta property="og:image" content="${card}">
+<meta name="twitter:card" content="summary_large_image"><meta name="twitter:title" content="${esc(title)}">
+<meta name="twitter:description" content="${esc(desc)}"><meta name="twitter:image" content="${card}">
+<style>body{margin:0;background:#05141a;color:#eaf6f9;font-family:system-ui,sans-serif;text-align:center}
+.wrap{max-width:640px;margin:0 auto;padding:24px}img{max-width:100%;border-radius:14px;border:1px solid #14414f}
+.stats{display:flex;gap:14px;justify-content:center;flex-wrap:wrap;margin:16px 0;color:#8fb3bd;font-size:14px}
+.stats b{color:#6ff0ff}a.cta,button{display:inline-block;margin:8px 6px;padding:11px 18px;border-radius:10px;border:1px solid #6ff0ff;
+background:#0e3a4a;color:#6ff0ff;text-decoration:none;cursor:pointer;font-size:15px}#vout{margin-top:14px;min-height:22px}
+.ok{color:#7CFFB2}.bad{color:#ff6b6b}</style></head><body><div class="wrap">
+<h1 style="color:#6ff0ff;margin-bottom:4px">Ledgerling</h1>
+<div style="color:#5f7d86;font-family:monospace;font-size:13px;margin-bottom:14px">${esc(shortNid(nid))}</div>
+<img src="${card}" alt="Ledgerling card">
+<div class="stats"><span>stage <b>${esc(stage)}</b></span><span>form <b>${esc(form)}</b></span>
+<span>care <b>${s.care}</b></span><span>quality <b>${Math.round(careRatio(s) * 100)}%</b></span>
+<span>${s.alive ? 'health <b>' + s.health + '</b>' : '<b class="bad">passed</b>'}</span></div>
+<button id="v">🔎 Verify this pet on-ledger</button>
+<a class="cta" href="${esc(APP_URL)}">🐾 Adopt your own</a>
+<a class="cta" href="/gallery.html">🏆 Gallery</a>
+<div id="vout"></div>
+<div style="color:#5f7d86;font-size:12px;margin-top:20px">Every feed, evolution and battle re-derives from XRPL ledger data under open rules. You don't trust the operator — you check.</div>
+<script>document.getElementById('v').onclick=async()=>{const o=document.getElementById('vout');o.textContent='re-deriving from ledger history…';
+try{const v=await(await fetch('/verify/${esc(nid)}')).json();o.innerHTML=v.verdict==='PASS'?'<span class=ok>✅ VERIFIED — '+v.interactions+' interactions reproduce from the open rules.</span>':v.verdict==='DIVERGED'?'<span class=bad>🚨 DIVERGED — does not match the open rules.</span>':'could not verify ('+(v.reason||'')+')';}catch(e){o.textContent='verify failed';}};</script>
+</div></body></html>`);
+  } catch (e) { res.status(500).type('text/html').send('error'); }
+});
+
 // export the issuer primitives so a harness can drive the logic without starting a server.
 module.exports = { app, withClient, readState, submit, verifyPet, replay, enc, dec, hex, unhex, R, TAXON, TF_MUTABLE_TRANSFERABLE, ROYALTY_BPS, ENDPOINT,
   A, loadHistory, encAch, decAch, listAchievements, claimAchievements, verifyAchievement, ACHIEVEMENT_TAXON, RULESET_VERSION,
   BR, seedFor, stateAtLedger, loadBattle, resolveBattleTx, verifyBattle, ledgerHashOf, BATTLE_TAXON, BATTLE_FEE_BPS, BATTLE_LEDGER_MARGIN, BATTLE_MEMO,
-  reconcilePet, pollerTick, startPoller, allIssuerNfts };
+  reconcilePet, pollerTick, startPoller, allIssuerNfts, genCardSvg, careRatio };
 
 if (require.main === module) {
   const PORT = process.env.PORT || 8788;
