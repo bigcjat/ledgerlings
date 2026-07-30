@@ -25,7 +25,16 @@ const xrpl = require('xrpl');
 
 const NETWORK = 'wss://xrplcluster.com';           // MAINNET
 const ISSUER = 'rDe4tWiu8hVNQEySmfzms47M6qt4JSWf6L';
-const REGULAR_KEY = 'r3cTNtQA4DuDPtvnbNFjVmafBURv1A2c5f';
+// Overridable, because the original candidate (r3cTNtQA4DuDPtvnbNFjVmafBURv1A2c5f, "Ledgerlings2")
+// was created in Xaman, and Xaman never exports account secrets. A RegularKey whose seed cannot be
+// retrieved is useless to a backend that has to sign unattended. Generate one with
+// mainnet_genkey.cjs and pass it here:
+//   LEDGERLINGS_REGULAR_KEY=rXXXX node mainnet_regularkey.cjs set
+const REGULAR_KEY = process.env.LEDGERLINGS_REGULAR_KEY || 'r3cTNtQA4DuDPtvnbNFjVmafBURv1A2c5f';
+if (!require('xrpl').isValidClassicAddress(REGULAR_KEY)) {
+  console.error(`LEDGERLINGS_REGULAR_KEY is not a valid classic address: ${REGULAR_KEY}`);
+  process.exit(2);
+}
 
 // xrpl.Wallet.fromSeed() defaults to ed25519 and, given a secp256k1 family seed, silently derives a
 // DIFFERENT account instead of erroring. Xaman secret-number accounts are secp256k1. Encoded
