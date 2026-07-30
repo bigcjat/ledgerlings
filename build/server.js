@@ -122,6 +122,11 @@ async function submit(c, w, tx) {
 }
 
 const app = express();
+// Railway terminates TLS at its edge and forwards the real scheme in x-forwarded-proto. Without
+// this, req.protocol reports 'http', so the share page emitted og:image and twitter:image as
+// http:// URLs — and X/Twitter, Discord and Slack all refuse to fetch card images over plain http.
+// The viral loop (/p/:nid share pages) rendered link previews with no image because of it.
+app.set('trust proxy', true);
 app.use(express.json({ limit: '8mb' }));   // accessory submissions carry a small PNG hash + metadata
 // CORS — locked to our own origin (not '*'). The canvas/demo are served from GitHub Pages.
 app.use((req, res, next) => {
