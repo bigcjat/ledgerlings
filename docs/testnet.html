@@ -1,0 +1,633 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>Ledgerlings (testnet)</title>
+<style>
+  :root{--ink:#0B1B2B;--base:#1E8A9C;--glow:#19C3E6;--hot:#6FF0FF;--blush:#E86A8A;--grey:#9AA8B0}
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent;user-select:none;font-family:ui-monospace,Menlo,monospace}
+  /* The page was overflow:hidden with a 100%-height app, which was fine when it was just the pet
+     and five buttons. The adopt box and the ladder made it taller than a phone viewport, and
+     everything below the fold became unreachable. Scroll vertically, never horizontally. */
+  html,body{margin:0;min-height:100%;background:radial-gradient(120% 80% at 50% 25%,#0e3a4a,#0b1b2b 75%);
+    color:#dff;overflow-x:hidden;overflow-y:auto;-webkit-overflow-scrolling:touch}
+  #app{max-width:420px;margin:0 auto;min-height:100%;display:flex;flex-direction:column;padding:14px;gap:10px;padding-bottom:28px}
+  #top{display:flex;justify-content:space-between;align-items:center;font-size:13px;opacity:.9}
+  #top b{color:var(--hot)}
+  #moodBadge{font-size:13px;cursor:pointer;padding:2px 8px;border-radius:12px;background:#0e3a4a;
+    border:1px solid #1c5a6b;white-space:nowrap}#moodBadge:active{transform:translateY(1px)}
+  #moodBadge.stale{opacity:.55}
+  #stage{position:relative;flex:1 0 auto;min-height:240px;display:flex;align-items:center;justify-content:center}
+  canvas{image-rendering:pixelated}
+  #bars{display:flex;flex-direction:column;gap:7px}
+  .bar{display:flex;align-items:center;gap:8px;font-size:12px}
+  .bar span{width:62px;opacity:.85}
+  .track{flex:1;height:9px;border-radius:5px;background:#0e3a4a;overflow:hidden;border:1px solid #1c5}
+  .fill{height:100%;transition:width .3s}
+  #acts{display:grid;grid-template-columns:repeat(5,1fr);gap:8px}
+  .btn{padding:11px 0;border:0;border-radius:12px;background:#12586b;color:#dff;font-size:20px;cursor:pointer;
+    box-shadow:0 3px 0 #0a3a48}.btn:active{transform:translateY(2px);box-shadow:0 1px 0 #0a3a48}
+  .btn small{display:block;font-size:9px;opacity:.7;margin-top:2px}
+  #verify{padding:9px;border:1px solid var(--glow);border-radius:10px;background:#0e3a4a;color:var(--hot);
+    font-size:12px;cursor:pointer;text-align:center}
+  #foot{font-size:10px;opacity:.55;text-align:center}
+  /* overlays */
+  .overlay{position:fixed;inset:0;background:rgba(11,27,43,.92);display:none;flex-direction:column;
+    align-items:center;justify-content:center;gap:14px;padding:18px;z-index:9}
+  .overlay.on{display:flex}
+  #combo{height:24px;font-size:22px;font-weight:700;color:var(--hot);text-shadow:0 0 12px var(--glow)}
+  .x{position:absolute;top:14px;right:18px;font-size:22px;cursor:pointer;opacity:.8}
+  .vline{font-size:13px;line-height:1.6;max-width:320px}
+  .ok{color:#6f6}.bad{color:#f88}
+  .toast{position:fixed;top:54px;left:50%;transform:translateX(-50%);background:#19c3e6;color:#0b1b2b;
+    padding:7px 16px;border-radius:20px;font-weight:700;font-size:13px;opacity:0;transition:opacity .25s;z-index:20}
+  .toast.on{opacity:1}
+</style>
+<!-- Xaman xApp wiring. Fill these in the xApp / deployment; empty = standalone local-demo mode. -->
+<script>window.XAMAN_API_KEY='33f663c6-6c51-4828-b92f-9f31da87a8d0';window.LEDGERLINGS_ISSUER='rE6WuQHWWJbgwoLYnSvbywaxH84K1tjjQm';window.LEDGERLINGS_BACKEND='https://ledgerlings-testnet-production.up.railway.app';</script>
+<script src="https://xaman.app/assets/cdn/xumm.min.js"></script>
+<script src="pet_rules.js"></script>
+<script src="xaman_bridge.js"></script>
+<script src="market_mood.js"></script>
+</head>
+<body>
+<div style="background:#7a4a00;color:#ffe9c2;padding:8px 12px;font-size:12px;text-align:center;line-height:1.45">
+  <b>XRPL TESTNET</b> — a free sandbox for judges and testers. Nothing here uses real XRP.
+  Everything works exactly as it does on mainnet, on the same code and the same open rules.<br>
+  The real one lives at <a href="./" style="color:#ffd27a">hugegreencandle.github.io/ledgerlings</a>.
+  Need test XRP to play? <a href="https://xrpl.org/xrp-testnet-faucet.html" target="_blank" rel="noopener" style="color:#ffd27a">XRPL testnet faucet</a>.
+</div>
+<div id="app">
+  <div id="top"><div>🥚 <b id="name">Ledgerlings</b></div>
+    <div style="display:flex;align-items:center;gap:8px">
+      <div id="moodBadge" title="tap: verify the mood (its on-chain / off-chain source)">😌 <b id="moodPct" style="color:var(--hot)">·</b></div>
+      <div id="meta">egg · day 0</div>
+    </div></div>
+  <div id="stage"><canvas id="c" width="200" height="220"></canvas></div>
+  <div id="bars">
+    <div class="bar"><span>🍖 hunger</span><div class="track"><div id="bH" class="fill"></div></div></div>
+    <div class="bar"><span>😊 happy</span><div class="track"><div id="bP" class="fill"></div></div></div>
+    <div class="bar"><span>❤️ health</span><div class="track"><div id="bL" class="fill"></div></div></div>
+  </div>
+  <div id="acts">
+    <button class="btn" data-op="feed">🍎<small>feed</small></button>
+    <button class="btn" data-op="play">🎾<small>play</small></button>
+    <button class="btn" data-op="clean">🧼<small>clean</small></button>
+    <button class="btn" data-op="heal">💊<small>heal</small></button>
+    <button class="btn" id="danceBtn">💃<small>dance</small></button>
+  </div>
+  <!-- Keyless mainnet adopt. Shown only when there is no Xaman xApp context (no XAMAN_API_KEY, or
+       opened as a plain web page) AND a backend is configured. POST /adopt is public, so anyone
+       with an XRPL address gets a real source-tagged mainnet mint without installing anything.
+       The xApp path takes precedence whenever it is available; this never competes with it. -->
+  <div id="keyless" style="display:none;margin-top:10px;padding:11px;border:1px solid var(--glow);border-radius:10px;background:#0e3a4a;text-align:left">
+    <div style="color:var(--hot);margin-bottom:7px">🐣 Adopt a real one on XRPL mainnet</div>
+    <button id="kSign" style="display:none;width:100%;padding:9px;margin-bottom:9px;border-radius:8px;border:1px solid var(--glow);background:#12586b;color:var(--hot);font:inherit;font-weight:bold;cursor:pointer">Sign in with Xaman</button>
+    <div id="kOr" style="display:none;opacity:.55;font-size:11px;text-align:center;margin-bottom:8px">or adopt without connecting a wallet</div>
+    <div style="opacity:.75;font-size:12px;margin-bottom:8px">Paste any XRPL address. We mint your Ledgerling on XRPL mainnet, recorded to your address, and anyone can verify its whole life from the ledger. The NFT is held by the game issuer for now, because the issuer is what updates it as your pet lives. No wallet connection and nothing to install. Once you have one, feeding it and fighting on the ladder are real transactions you approve in Xaman.</div>
+    <input id="kAddr" placeholder="r..." autocomplete="off" spellcheck="false"
+      style="width:100%;box-sizing:border-box;padding:8px;border-radius:8px;border:1px solid var(--glow);background:#062430;color:#cfefff;font:inherit;font-size:13px">
+    <button id="kGo" style="margin-top:8px;width:100%;padding:9px;border-radius:8px;border:1px solid var(--glow);background:#0b5;color:#022;font:inherit;font-weight:bold;cursor:pointer">Adopt on mainnet</button>
+    <div id="kMsg" style="margin-top:7px;font-size:12px;opacity:.85"></div>
+  </div>
+
+  <!-- Says plainly whether what you are looking at is on a ledger. The page used to simulate
+       silently, which meant a visitor could play a whole session believing it was real. -->
+  <div id="mode" style="margin-top:9px;font-size:12px;opacity:.8"></div>
+
+  <!-- NPC ladder. Solo-playable, so it needs no second player, and it is the clearest demonstration
+       of the fairness claim: the seed is the hash of a ledger that does not exist yet at challenge
+       time, and the opponent's stats are published up front. -->
+  <div id="ladderBox" style="display:none;margin-top:10px;padding:11px;border:1px solid var(--glow);border-radius:10px;background:#0e3a4a;text-align:left">
+    <div style="color:var(--hot);margin-bottom:6px">⚔️ Ladder — fight a published opponent</div>
+    <div style="opacity:.72;font-size:12px;margin-bottom:8px">Their stats are public before you fight. The dice are the hash of a ledger that has not closed yet, so nobody can know or rig the result. Free, and you can re-check it afterwards.</div>
+    <div id="rungs" style="display:grid;gap:6px"></div>
+    <div id="lMsg" style="margin-top:7px;font-size:12px;opacity:.85"></div>
+  </div>
+
+  <div id="verify">🔎 Verify my pet — prove the game played fair</div>
+  <div id="share" style="margin-top:8px;padding:9px;border:1px solid var(--glow);border-radius:10px;background:#0e3a4a;color:var(--hot);cursor:pointer;display:none">🔗 Share my Ledgerling</div>
+  <div id="foot">on XRPL · pet = a Dynamic NFT · every rule is open &amp; re-checkable</div>
+  <div id="foot" style="margin-top:8px"><a href="canvas.html" style="color:#00ff66;text-decoration:none">🎨 Collaborators: design an accessory →</a> earn a 5% royalty on every resale</div>
+</div>
+
+<div class="overlay" id="dance">
+  <div class="x" data-close="dance">✕</div>
+  <div style="font-size:13px;opacity:.8">tap the screen on the beat · happiness +bounded</div>
+  <div id="combo"></div>
+  <canvas id="dc" width="220" height="220"></canvas>
+  <div style="font-size:12px">SCORE <b id="dscore" style="color:var(--hot)">0</b> · COMBO <b id="dcombo" style="color:var(--hot)">0</b> · +HAPPY <b id="dhappy" style="color:var(--hot)">0</b>/10</div>
+</div>
+
+<div class="overlay" id="vov">
+  <div class="x" data-close="vov">✕</div>
+  <div style="font-size:16px;font-weight:700;color:var(--hot)">Verify my pet</div>
+  <div class="vline" id="vbody"></div>
+</div>
+
+<div class="overlay" id="mov">
+  <div class="x" data-close="mov">✕</div>
+  <div style="font-size:16px;font-weight:700;color:var(--hot)">Verify the mood</div>
+  <div class="vline" id="mbody"></div>
+</div>
+
+<div class="overlay" id="lov">
+  <div class="x" data-close="lov">✕</div>
+  <div style="font-size:16px;font-weight:700;color:var(--hot)" id="ltitle">Ladder</div>
+  <div class="vline" id="lbody" style="white-space:pre-wrap;word-break:break-all;font-size:12px"></div>
+</div>
+
+<!-- Keyless play. An interaction is an ordinary Payment with a memo, so any wallet can drive a
+     LIVE pet. Shown instead of simulating, because simulating over a real pet would drift from
+     the ledger and make Verify fail for reasons the player did not cause. -->
+<div class="overlay" id="pov">
+  <div class="x" data-close="pov">✕</div>
+  <div style="font-size:16px;font-weight:700;color:var(--hot)" id="ptitle">Send this transaction</div>
+  <div class="vline" id="pbody" style="white-space:pre-wrap;word-break:break-all;font-size:12px"></div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+// ── rules engine: SINGLE source of truth = pet_rules.js (proven ≡ pet_rules.py by diff_rules.js).
+// No inline copy — the app, the issuer (server.js) and the replay verifier run the EXACT same step(). ──
+const { DAY, DECAY, RESTORE, COOLDOWN, LIFESPAN, STAGE_AGE, clamp,
+        EGG, BABY, TEEN, ADULT, ELDER, PASSED,
+        STAGE, FORM, FEED, PLAY, CLEAN, HEAL, genesis, step, stageForAge, evolve } = PetRules;
+
+// ── demo clock: advances "now" with real time so the pet visibly lives/ages ──
+const DEMO_LPS=120;                       // ledgers/sec in the demo (a "day" ~ 3 min)
+let OWNER='rDemoOwner', petNid=null, xamanReady=false;     // OWNER becomes the Xaman account in real mode
+let pet=genesis(0,OWNER), now0=performance.now(), nowLedger=()=> Math.floor((performance.now()-now0)/1000*DEMO_LPS);
+
+// Unified clock. A LIVE pet's birth is a real validated ledger index (~105.9M on mainnet), while the
+// demo clock counts up from zero at boot. Mixing them makes age = now - birth wildly negative, which
+// is how a freshly adopted mainnet pet rendered as "day -4905". Declared here, above the render loop,
+// because tick() runs synchronously further down and `let` bindings are not hoisted.
+let liveLedger0=null, liveT0=0;
+// Returns null for a LIVE pet whose real ledger height is not known yet. It must NOT fall back to
+// the demo clock in that window: a frame that ages a live pet with the demo clock writes a tiny
+// last_ix into it, and the next frame — once the real height arrives — sees a gap of ~105 million
+// ledgers, caps decay at 100, and kills the pet outright. That is what rendered a 30-minute-old
+// mainnet pet as "gone (neglect)". Callers skip the tick instead of guessing.
+const nowL=()=> petNid
+  ? (liveLedger0!=null ? liveLedger0 + Math.floor((performance.now()-liveT0)/4000) : null)
+  : nowLedger();
+
+// ── the same procedural pet (mood-aware) ──
+const INK='#0B1B2B',SHA='#0E3A4A',BASE='#1E8A9C',LGT='#3FB6C4',HI='#7FE0E6',GLOW='#19C3E6',HOT='#6FF0FF',
+      WHT='#E8FFFF',EYEW='#F2FBFC',BLUSH='#E86A8A',GREY='#9AA8B0';
+function rr(X,x,y,w,h,r){X.beginPath();X.moveTo(x+r,y);X.arcTo(x+w,y,x+w,y+h,r);X.arcTo(x+w,y+h,x,y+h,r);
+  X.arcTo(x,y+h,x,y,r);X.arcTo(x,y,x+w,y,r);X.closePath();}
+// market-mood -> render params (COSMETIC ONLY; never reads/writes pet care-state)
+// returns aura ring color (direction), core hue (magnitude/brightness mult),
+// and idle-motion modifiers (variant). Safe defaults => neutral 'calm' look.
+function moodFx(mkt){
+  const m=(mkt&&!mkt.stale)?mkt.mood:'calm', d=(mkt&&!mkt.stale)?mkt.dPct:0;
+  const mag=Math.min(1,Math.abs(d)/6);                 // 0..1 by magnitude
+  // aura: green/cyan up, blue-grey down, amber-flicker dizzy, neutral calm
+  let aura='rgba(111,240,255,0)', coreMul=1, hueShift=null;
+  switch(m){
+    case 'euphoric': aura='rgba(111,255,200,0.55)'; coreMul=1.6+0.4*mag; hueShift='cyanwhite'; break;
+    case 'happy':    aura='rgba(120,240,180,0.40)'; coreMul=1.25+0.2*mag; break;
+    case 'calm':     aura='rgba(120,200,220,0.18)'; coreMul=1.0; break;
+    case 'worried':  aura='rgba(120,150,200,0.40)'; coreMul=0.7; hueShift='blue'; break;
+    case 'scared':   aura='rgba(80,110,170,0.55)';  coreMul=0.45; hueShift='deepblue'; break;
+    case 'dizzy':    aura='rgba(230,180,120,0.45)'; coreMul=1.0; hueShift='flicker'; break;
+  }
+  return {m,d,mag,aura,coreMul,hueShift};
+}
+function drawPet(X,cx,cy,bounce,squash,coreGlow,mood,mkt){
+  const dead=pet.alive===0, sad=mood==='sad', big=0.6+0.12*pet.stage;
+  const fx=moodFx(mkt);
+  // idle-animation variant by market mood (cosmetic motion only)
+  const t2=performance.now()/1000;
+  let mBounce=0, mWob=0, mSpin=0;
+  if(!dead){
+    if(fx.m==='euphoric') mBounce=2.5+1.5*Math.abs(Math.sin(t2*3));
+    else if(fx.m==='scared') mWob=Math.sin(t2*22)*1.4;          // tremble
+    else if(fx.m==='worried') mBounce=-1.5;                      // slight droop
+    else if(fx.m==='dizzy'){ mWob=Math.sin(t2*9)*1.2; mSpin=Math.sin(t2*1.8)*0.08; }
+  }
+  const w=70*big*(1+squash*0.18), h=78*big*(1-squash*0.14);
+  // AURA RING — drawn behind the pet; direction=color, magnitude=size/alpha
+  if(!dead && fx.aura!=='rgba(111,240,255,0)'){
+    const ar=(w*0.62)*(1+0.18*fx.mag) + (fx.m==='dizzy'?4*Math.abs(Math.sin(t2*7)):0);
+    const ag=X.createRadialGradient(cx,cy-bounce+8,ar*0.55,cx,cy-bounce+8,ar*1.25);
+    ag.addColorStop(0,'rgba(0,0,0,0)'); ag.addColorStop(0.7,fx.aura); ag.addColorStop(1,'rgba(0,0,0,0)');
+    X.save();X.fillStyle=ag;X.beginPath();X.arc(cx,cy-bounce+8,ar*1.25,0,6.28);X.fill();X.restore();
+  }
+  X.save(); X.translate(cx+mWob,cy-bounce-mBounce); if(mSpin) X.rotate(mSpin);
+  const top= dead?GREY:HI, mid= sad?'#5A7A82':BASE, lo= sad?'#3A555E':SHA;
+  const g=X.createLinearGradient(0,-h/2,0,h/2); g.addColorStop(0,top);g.addColorStop(.25,sad?'#7896A0':LGT);
+  g.addColorStop(.6,mid);g.addColorStop(1,lo);
+  X.fillStyle=g;X.strokeStyle=INK;X.lineWidth=4; rr(X,-w/2,-h/2,w,h,26*big);X.fill();X.stroke();
+  if(!dead){X.fillStyle=HI;X.beginPath();X.ellipse(-w*0.2,-h*0.28,12*big,7*big,0,0,6.28);X.fill();}
+  X.fillStyle=sad?GREY:BLUSH;X.beginPath();X.ellipse(-w*0.38,4,5,4,0,0,6.28);X.ellipse(w*0.38,4,5,4,0,0,6.28);X.fill();
+  // eyes by mood
+  for(const ex of [-16*big,16*big]){
+    if(mood==='happy'){X.strokeStyle=INK;X.lineWidth=3;X.beginPath();X.arc(ex,-8,6,Math.PI*1.1,Math.PI*1.9);X.stroke();}
+    else if(dead){X.strokeStyle=INK;X.lineWidth=3;X.beginPath();X.moveTo(ex-4,-12);X.lineTo(ex+4,-6);X.moveTo(ex+4,-12);X.lineTo(ex-4,-6);X.stroke();}
+    else{X.fillStyle=INK;X.beginPath();X.ellipse(ex,-9+(sad?2:0),7,9,0,0,6.28);X.fill();
+      X.fillStyle=EYEW;X.beginPath();X.ellipse(ex-2,-13,2.6,2.6,0,0,6.28);X.fill();
+      X.fillStyle=GLOW;X.beginPath();X.ellipse(ex+3,-5,1.5,1.5,0,0,6.28);X.fill();}
+  }
+  // PROOF-CORE — glows even when sad/dead (the proof never lies).
+  // Market mood ONLY tints/brightens the cosmetic glow (coreMul + hueShift).
+  let cMul=fx.coreMul, flick=1;
+  if(fx.hueShift==='flicker') flick=0.6+0.4*Math.abs(Math.sin(t2*14)); // dizzy
+  const r=(8+coreGlow*7*cMul*flick)*big, cg=X.createRadialGradient(0,18,0,0,18,r*1.8);
+  // direction/magnitude hue: brighter cyan-white up, deep blue down
+  let c0=WHT,c1=HOT,c2=GLOW;
+  if(fx.hueShift==='cyanwhite'){c0='#FFFFFF';c1='#9FFFF6';c2='#39E6FF';}
+  else if(fx.hueShift==='blue'){c0='#CFE6FF';c1='#6FB0F0';c2='#3C78D0';}
+  else if(fx.hueShift==='deepblue'){c0='#9FC0F0';c1='#4F78C0';c2='#2A4FA0';}
+  cg.addColorStop(0,c0);cg.addColorStop(.3,c1);cg.addColorStop(.7,c2);cg.addColorStop(1,'rgba(25,195,230,0)');
+  X.fillStyle=cg;X.beginPath();X.arc(0,18,r*1.8,0,6.28);X.fill();
+  X.fillStyle=c1;X.beginPath();X.moveTo(0,18-r*.7);X.lineTo(r*.7,18);X.lineTo(0,18+r*.7);X.lineTo(-r*.7,18);X.closePath();X.fill();
+  X.restore();
+}
+function mood(){ if(pet.alive===0)return'dead'; if(pet.health<35||pet.hunger<20||pet.happiness<20)return'sad';
+  if(performance.now()-lastJoy<700)return'happy'; return'idle'; }
+
+// ── main render loop ──
+const C=document.getElementById('c'),X=C.getContext('2d');
+let lastJoy=-1e9;
+function tick(){
+  requestAnimationFrame(tick);
+  // live decay: re-derive state from the advancing clock (cheap; re-applies decay via a no-op step)
+  // op 0 = pure decay/age/death pass. Uses the UNIFIED clock: a live pet must be aged against the
+  // real validated ledger, never the demo clock. Before this, every animation frame recomputed a
+  // live pet's state from the wrong epoch and overwrote what the poller had just fetched.
+  const _n=nowL();
+  if(_n!=null) pet=step(pet,0,_n,OWNER);   // null = live pet, real ledger height not known yet: don't age it
+  X.clearRect(0,0,200,220);
+  const t=performance.now()/1000, bp=Math.abs(Math.sin(t*2.2));
+  const mkt=(window.MarketMood?MarketMood.get():null);
+  drawPet(X,100,120,bp*5,(1-bp)*0.2,0.25+0.25*bp,mood(),mkt);
+  updateMoodBadge(mkt);
+  // hud
+  document.getElementById('bH').style.width=pet.hunger+'%';
+  document.getElementById('bP').style.width=pet.happiness+'%';
+  document.getElementById('bL').style.width=pet.health+'%';
+  document.getElementById('bH').style.background=pet.hunger<25?GREY:'linear-gradient(90deg,#e8a06a,#f0c06f)';
+  document.getElementById('bP').style.background=pet.happiness<25?GREY:'linear-gradient(90deg,#6ad0e6,#6ff0ff)';
+  document.getElementById('bL').style.background=pet.health<25?'#f88':'linear-gradient(90deg,#e86a8a,#ff9ab0)';
+  const icon=['🥚','🐣','🐥','🐲','🦕','💀'][pet.stage];
+  document.getElementById('name').textContent='Ledgerlings';
+  document.querySelector('#top div').firstChild.textContent=icon+' ';
+  document.getElementById('meta').textContent=
+    (pet.alive?STAGE[pet.stage]:'gone ('+(pet.death_cause===2?'old age':'neglect')+')')
+    +' · day '+Math.floor(pet.age/DAY)+(pet.form?' · '+FORM[pet.form]:'');
+}
+tick();
+
+function toast(m){const e=document.getElementById('toast');e.textContent=m;e.classList.add('on');setTimeout(()=>e.classList.remove('on'),1100);}
+
+// ── Market Mood HUD badge (emoji + Δ%) — cosmetic, never touches care-state ──
+function updateMoodBadge(mkt){
+  const b=document.getElementById('moodBadge'), p=document.getElementById('moodPct');
+  if(!b) return;
+  if(!mkt){ b.firstChild.textContent='😌 '; p.textContent='·'; return; }
+  const em=MarketMood.emoji(mkt.mood);
+  b.firstChild.textContent=em+' ';
+  if(mkt.stale || mkt.price===null){ p.textContent='—'; b.classList.add('stale'); }
+  else { const d=mkt.dPct; p.textContent=(d>=0?'+':'')+d.toFixed(2)+'%'; b.classList.remove('stale'); }
+}
+document.getElementById('moodBadge').onclick=()=>{
+  open('mov');
+  const mkt=window.MarketMood?MarketMood.get():null;
+  const body=document.getElementById('mbody');
+  if(!mkt || mkt.price===null){
+    body.innerHTML=`<span class="bad">No live price yet.</span><br><br>`+
+      `The price feed hasn't returned a reading (offline, blocked, or still starting). `+
+      `The pet falls back to <b>😌 calm</b> and the mood overlay shows nothing it can't prove.`;
+    return;
+  }
+  const src=mkt.source||'unknown';
+  const ageS=mkt.updated?Math.max(0,Math.round((Date.now()-mkt.updated)/1000)):'?';
+  let srcLine, head;
+  if(mkt.onLedger && mkt.oracle){
+    head=`Mood from the <b>XRPL Price Oracle</b> — verifiable on-chain.`;
+    srcLine=`Oracle <b>${mkt.oracle.account}</b>#${mkt.oracle.docId}`+
+            (mkt.oracle.ledger?` · as of ledger <b>${mkt.oracle.ledger}</b>`:'')+`.`;
+  } else {
+    head=`Mood from an <b>off-chain</b> price source (honest label — this is NOT the on-ledger oracle yet).`;
+    srcLine=`Source: <b>${src}</b>. The on-ledger XRPL Price Oracle path is stubbed (readOnLedgerOracle) `+
+            `and swaps in the moment a live XRP/USD oracle account+doc-id is identified.`;
+  }
+  body.innerHTML=
+    `${head}<br><br>`+
+    `XRP/USD = <b>$${mkt.price.toFixed(4)}</b> · short-term Δ <b>${(mkt.dPct>=0?'+':'')+mkt.dPct.toFixed(2)}%</b> `+
+    `→ mood <b>${MarketMood.emoji(mkt.mood)} ${mkt.mood}</b>.<br><br>`+
+    `${srcLine}<br>`+
+    `<span style="opacity:.7">read ${ageS}s ago${mkt.stale?' · ⚠ stale':''}</span><br><br>`+
+    `<span style="opacity:.6">Market mood is <b>cosmetic + ephemeral</b>. It changes only the aura, core hue `+
+    `and idle animation — it never touches the fair care-state or the replay verifier.</span>`;
+};
+
+// ── interactions (local demo = apply rules now; PRODUCTION = sign a Payment+memo via Xaman, issuer modifies the dNFT) ──
+const OPNUM={feed:FEED,play:PLAY,clean:CLEAN,heal:HEAL};
+async function syncLedger(){ const l=await XamanBridge.now(); if(l){ liveLedger0=l; liveT0=performance.now(); refreshOps(); } }
+// feed/play are cooldown-gated (no-farming). Gray them out while on cooldown so no Xaman signature is wasted on a no-op.
+function opReady(op){ if(op!=='feed'&&op!=='play') return true; const n=nowL(); if(n==null) return false; const last=op==='feed'?pet.last_feed:pet.last_play; return !last || (n-last)>=COOLDOWN; }
+function refreshOps(){ document.querySelectorAll('[data-op]').forEach(b=>{ const op=b.dataset.op; if(op==='feed'||op==='play'){ const rdy=opReady(op); b.disabled=!rdy; b.style.opacity=rdy?'':'.4'; b.title=rdy?'':'on cooldown — feeding/playing again now is a no-op (no-farming rule)'; } }); }
+setInterval(refreshOps,1000);
+document.querySelectorAll('[data-op]').forEach(b=>b.onclick=async ()=>{
+  const op=b.dataset.op, before=JSON.stringify(pet);
+  if(!opReady(op)){ toast(op+' on cooldown'); return; }    // don't spend a signature on a no-op
+  if(xamanReady){                                          // REAL: sign a Payment+memo in Xaman; issuer applies the rules + NFTokenModify
+    const r=await XamanBridge.interact(op,petNid);
+    if(r.local){ /* fell back */ } else if(!r.signed){ toast('cancelled'); return; }
+    else { toast(op+' signed! 💖 applying…'); lastJoy=performance.now();
+      // the issuer poller applies the NFTokenModify within a few ledgers; poll for the authoritative state
+      for(let i=0;i<8;i++){ await new Promise(r=>setTimeout(r,2500)); const live=petNid&&await XamanBridge.fetchPet(petNid); if(live)pet=live; }
+      await syncLedger(); refreshOps(); return; }
+  }
+  if(petNid){                                              // LIVE pet: sign it for real, never simulate over on-ledger state
+    const j=await signRequest({kind:'interact', owner:OWNER, nid:petNid, op},
+      op+' your Ledgerling',
+      'Approve a 10-drop Payment in Xaman. The issuer reads it from the ledger and applies the open rules.');
+    if(j) watchSign(j.uuid, ()=>{ setTimeout(pullLive, 6000); toast(op+' signed 💖'); });
+    return;
+  }
+  pet=step(pet,OPNUM[op],nowLedger(),OWNER);               // LOCAL demo (no Xaman / standalone)
+  if(JSON.stringify(pet)!==before){lastJoy=performance.now();toast(op+'! 💖');}
+});
+
+// Server-built Xaman sign requests. The browser SDK's authorize() hangs on desktop and mobile alike,
+// so payloads are created by the backend instead and the user is handed a link plus a QR. Nothing is
+// auto-opened: there is an await before we could call window.open, which is precisely what browsers
+// block. A link the user taps is always allowed.
+async function signRequest(body, title, note){
+  const bd=document.getElementById('lbody'), ov=document.getElementById('lov');
+  document.getElementById('ltitle').textContent=title;
+  bd.textContent='creating the sign request…';
+  ov.classList.add('on');
+  let j=null;
+  try{ j=await (await fetch(BK()+'/sign',{method:'POST',headers:{'content-type':'application/json'},
+       body:JSON.stringify(body)})).json(); }
+  catch(e){ j={error:String(e.message||e)}; }
+  if(!j||j.error||!j.next){ bd.textContent='could not create the sign request: '+((j&&j.error)||'unknown'); return null; }
+  bd.innerHTML=
+    `<div style="margin-bottom:10px">${note||''}</div>`+
+    `<a href="${j.next}" target="_blank" rel="noopener" style="display:block;padding:10px;border-radius:8px;`+
+    `background:#0b5;color:#022;font-weight:bold;text-align:center;text-decoration:none">Open in Xaman</a>`+
+    (j.qr?`<div style="text-align:center;margin-top:10px"><img src="${j.qr}" alt="Xaman QR" style="width:190px;max-width:100%;border-radius:8px"><div style="opacity:.6;font-size:11px;margin-top:5px">or scan with Xaman</div></div>`:'')+
+    `<div id="sgStat" style="margin-top:10px;opacity:.8;font-size:12px">waiting for you to approve…</div>`;
+  return j;
+}
+// Poll until Xaman reports the payload signed, cancelled or expired.
+function watchSign(uuid, onSigned){
+  let tries=0;
+  const t=setInterval(async ()=>{
+    if(++tries>60){ clearInterval(t); return; }
+    let r=null; try{ r=await (await fetch(BK()+'/sign/'+uuid)).json(); }catch{ return; }
+    const st=document.getElementById('sgStat');
+    if(r.signed){ clearInterval(t); if(st) st.textContent='signed ✓'; onSigned&&onSigned(r.txid); }
+    else if(r.cancelled){ clearInterval(t); if(st) st.textContent='cancelled'; }
+    else if(r.expired){ clearInterval(t); if(st) st.textContent='expired'; }
+  },3000);
+}
+
+// ── NPC ladder ───────────────────────────────────────────────────────────────────────────────────
+// Only offered for a LIVE pet: a demo pet has no on-ledger history to fight from.
+let LADDER=[];
+async function loadLadder(){
+  if(!BK()||!petNid) return;
+  try{ const j=await (await fetch(BK()+'/ladder')).json(); LADDER=j.rungs||j||[]; }catch{ return; }
+  if(!LADDER.length) return;
+  const box=document.getElementById('ladderBox'), list=document.getElementById('rungs');
+  list.innerHTML='';
+  LADDER.forEach((r,i)=>{
+    const st=r.stats||{};
+    const b=document.createElement('button');
+    b.style.cssText='padding:8px;border-radius:8px;border:1px solid var(--glow);background:#12586b;color:#dff;font:inherit;font-size:12px;cursor:pointer;text-align:left';
+    b.innerHTML=`<b style="color:var(--hot)">${r.name}</b> <span style="opacity:.6">rung ${r.rung!=null?r.rung:i}</span><br>`+
+      `<span style="opacity:.7;font-size:11px">stage ${st.stage!=null?st.stage:'?'} · care ${st.care!=null?st.care:'?'} · health ${st.health!=null?st.health:'?'}`+
+      (r.power!=null?` · power ${r.power}`:'')+`</span>`;
+    b.onclick=()=>challengeRung(r.rung!=null?r.rung:i, r.name);
+    list.appendChild(b);
+  });
+  box.style.display='block';
+  refreshRank();
+}
+async function refreshRank(){
+  if(!BK()||!petNid) return;
+  try{
+    const j=await (await fetch(BK()+'/ladder-rank/'+petNid)).json();
+    if(j && (j.wins!=null))
+      document.getElementById('lMsg').textContent=`your record: ${j.wins} win(s) · streak ${j.streak||0} · best rung ${j.highestRung!=null?j.highestRung:'-'}`;
+  }catch{ /* rank is cosmetic */ }
+}
+async function challengeRung(rung,name){
+  const j=await signRequest(
+    {kind:'ladder', owner:OWNER, nid:petNid, rung},
+    'Challenge '+name,
+    `Approve a 1-drop challenge in Xaman. The dice are the hash of a ledger that has not closed yet, `+
+    `so nobody can know or rig the result. Settlement is automatic, and you can re-derive it yourself.`);
+  if(!j) return;
+  watchSign(j.uuid, txid=>{
+    document.getElementById('lMsg').textContent='challenge signed. Settling once the pinned ledger closes, about a minute.';
+    watchBattle(txid);
+  });
+}
+
+// Poll for the result memo the issuer writes once the pinned ledger closes.
+function watchBattle(battleId){
+  if(!battleId) return;
+  const msg=document.getElementById('lMsg');
+  let tries=0;
+  const t=setInterval(async ()=>{
+    if(++tries>40){ clearInterval(t); return; }
+    try{
+      const b=await (await fetch(BK()+'/battle/'+battleId)).json();
+      if(b && b.result){
+        clearInterval(t);
+        const won=b.result.winnerNid===petNid;
+        msg.textContent=won?'you won that one 🏆':(b.result.winnerNid==='DRAW'?'a draw':'you lost that one');
+        toast(won?'ladder win 🏆':'ladder result in');
+        refreshRank(); pullLive();
+      }
+    }catch{ /* keep waiting */ }
+  },6000);
+}
+
+// A Ledgerlings interaction is an ordinary Payment. The issuer's poller reads it out of ledger
+// history (server.js parses MemoType "ledgerlings/op"), applies the open rules and NFTokenModifies
+// the pet, so ANY wallet can play — Xaman just makes it one tap. Showing the raw spec keeps a
+// keyless visitor on the real ledger instead of a simulation that would drift from it.
+const toHex=s=>Array.from(new TextEncoder().encode(s)).map(b=>b.toString(16).padStart(2,'0')).join('').toUpperCase();
+function showPaymentSpec(op){
+  const issuer=window.LEDGERLINGS_ISSUER||'(the issuer)';
+  const body=document.getElementById('pbody');
+  const spec=
+    `To play for real, send this from any XRPL wallet. The issuer picks it up from the ledger and applies the rules.\n\n`+
+    `Destination : ${issuer}\n`+
+    `Amount      : 10 drops (0.00001 XRP)\n`+
+    `MemoType    : ledgerlings/op        hex ${toHex('ledgerlings/op')}\n`+
+    `MemoData    : ${op}|${petNid}\n`+
+    `              hex ${toHex(op+'|'+petNid)}\n`+
+    `SourceTag   : 2606250001\n\n`+
+    `Your pet updates within a few ledgers, and Verify will still pass, because the same rules are `+
+    `replayed from that transaction. Nothing here is applied locally.`;
+  document.getElementById('ptitle').textContent=op+' — send this transaction';
+  body.textContent=spec;
+  document.getElementById('pov').classList.add('on');   // not open(): that name shadows window.open
+}
+
+// ── mode banner + share wiring, shared by both paths ──
+const BK=()=>window.LEDGERLINGS_BACKEND||'';
+function showShare(){ const sh=document.getElementById('share');
+  if(petNid&&BK()){ sh.style.display='block'; sh.onclick=()=>window.open(BK()+'/p/'+petNid,'_blank'); } }
+function setMode(){
+  const el=document.getElementById('mode');
+  if(petNid) el.innerHTML='🟢 <b>live on XRPL mainnet</b> · this pet is a real dNFT · '+
+    (BK()?`<a href="${BK()}/p/${petNid}" target="_blank" style="color:var(--hot)">view its public page</a>`:'');
+  else el.innerHTML='⚪️ <b>demo mode</b> · nothing here is on a ledger yet. Adopt above to mint a real one.';
+}
+
+// Poll the backend for authoritative state. The issuer's poller reconciles each pet to
+// replay(history), so this is the state the verifier checks, not a local guess.
+async function pullLive(){ if(!petNid) return; const live=await XamanBridge.fetchPet(petNid); if(live){ pet=live; refreshOps(); } }
+
+// Keyless adopt. POST /adopt is public and takes any classic address, so a visitor with no wallet
+// software still gets a real, source-tagged, mainnet mint. This is the same endpoint that passed
+// the Make Waves mainnet gate on 2026-07-30.
+async function keylessAdopt(addr){
+  const msg=document.getElementById('kMsg'), go=document.getElementById('kGo');
+  if(!/^r[1-9A-HJ-NP-Za-km-z]{24,34}$/.test(addr)){ msg.textContent='That does not look like an XRPL address (starts with r).'; return; }
+  go.disabled=true; msg.textContent='minting on mainnet…';
+  let a=null; try{ a=await (await fetch(BK()+'/adopt',{method:'POST',headers:{'content-type':'application/json'},
+    body:JSON.stringify({owner:addr})})).json(); }catch(e){ a={error:String(e.message||e)}; }
+  go.disabled=false;
+  if(!a||a.error||!a.nid){ msg.textContent='could not adopt: '+((a&&a.error)||'unknown error'); return; }
+  OWNER=addr; petNid=a.nid; if(a.state) pet=a.state;
+  msg.innerHTML=a.existing?'You already had one. Loaded it.':'Minted. It is on mainnet now.';
+  document.getElementById('keyless').style.display='none';
+  await syncLedger(); setInterval(syncLedger,30000);
+  setInterval(pullLive,15000);
+  showShare(); setMode(); refreshOps(); loadLadder();
+  toast('adopted on mainnet 🎉');
+}
+
+// boot: prefer the Xaman xApp path; fall back to keyless adopt; otherwise stay a labelled demo
+(async()=>{
+  xamanReady=await XamanBridge.init();
+  if(xamanReady){ OWNER=XamanBridge.account;
+    const a=await XamanBridge.adopt();                     // mints (or returns) the user's pet dNFT
+    if(a&&a.nid){ petNid=a.nid; if(a.state) pet=a.state; }
+    toast('connected: '+OWNER.slice(0,8)+'…');
+    await syncLedger(); setInterval(syncLedger,30000);     // real ledger for cooldown gray-out
+    showShare(); loadLadder();
+  } else if(BK()){
+    document.getElementById('keyless').style.display='block';
+    document.getElementById('kGo').onclick=()=>keylessAdopt(document.getElementById('kAddr').value.trim());
+    document.getElementById('kAddr').addEventListener('keydown',e=>{ if(e.key==='Enter') document.getElementById('kGo').click(); });
+    // Xaman sign-in, when an API key is configured. Offered as a button rather than run at load,
+    // because authorize() opens a popup and browsers block popups that are not user-initiated.
+    // Sign-in intentionally NOT offered. xumm.authorize() hangs on desktop and mobile alike, and it
+    // buys nothing now: /sign builds payloads server-side from just an address, so a player signs
+    // real transactions in Xaman without ever connecting a wallet to the page.
+    if(false){
+      const sb=document.getElementById('kSign'); sb.style.display='block';
+      document.getElementById('kOr').style.display='block';
+      sb.onclick=async ()=>{
+        sb.disabled=true; sb.textContent='opening Xaman…';
+        const msg=document.getElementById('kMsg');
+        msg.textContent='a Xaman window should open. Scan the QR with Xaman on your phone.';
+        // If the browser blocked the popup, the SDK would wait forever with nothing on screen.
+        // Show the link instead: clicking it is user-initiated, so it always opens.
+        const acct=await XamanBridge.signIn(url=>{
+          msg.innerHTML='Your browser blocked the Xaman window. '+
+            `<a href="${url}" target="_blank" rel="noopener" style="color:var(--hot)">Open the Xaman sign-in</a>`+
+            ' and scan the QR with Xaman on your phone.';
+        });
+        sb.disabled=false; sb.textContent='Sign in with Xaman';
+        if(!acct){ if(!/blocked/.test(msg.textContent)) msg.textContent='sign-in did not complete'; return; }
+        msg.textContent='';
+        xamanReady=true;                       // interactions can now be signed rather than copied out
+        document.getElementById('kAddr').value=acct;
+        await keylessAdopt(acct);              // same public /adopt; the signed-in account owns it
+      };
+    }
+  }
+  setMode();
+})();
+
+// ── Xaman xApp wiring is REAL and lives in xaman_bridge.js (init/interact/adopt/fetchPet). ──
+// Flow: tap → XamanBridge.interact(op) signs a Payment+memo in Xaman → the issuer backend
+// (server.js) parses the memo, runs pet_rules.step(), and NFTokenModifies the dNFT (interaction.py)
+// → the app re-reads authoritative state via XamanBridge.fetchPet(nid). No-SDK/no-key → local demo.
+// Config (set before xaman_bridge.js loads): window.XAMAN_API_KEY / LEDGERLINGS_ISSUER / LEDGERLINGS_BACKEND.
+
+// ── DANCE mini-game (tap-to-beat; awards BOUNDED happiness on close) ──
+const DC=document.getElementById('dc'),DX=DC.getContext('2d');
+let dRun=false,dT0=0,dBpm=120,dBeat=500,dScore=0,dCombo=0,dBest=0,dHappy=0,dLastHit=-1e9,dParts=[];
+document.getElementById('danceBtn').onclick=()=>{open('dance');dRun=true;dT0=performance.now();dScore=dCombo=dHappy=0;};
+function dTap(){ if(!dRun)return; const ph=((performance.now()-dT0)%dBeat+dBeat)%dBeat, e=Math.min(ph,dBeat-ph);
+  let col; if(e<70){dCombo++;dScore+=3;col=HOT;} else if(e<140){dCombo++;dScore+=1;col=GLOW;} else {dCombo=0;col=GREY;}
+  dBest=Math.max(dBest,dCombo); if(e<140){dLastHit=performance.now(); if(dCombo%4===0)dHappy=Math.min(10,dHappy+1);
+    for(let i=0;i<8;i++){const a=Math.random()*6.28,s=1+Math.random()*3;dParts.push({x:110,y:120,vx:Math.cos(a)*s,vy:Math.sin(a)*s-1,l:1,c:col});}}
+  document.getElementById('combo').textContent=(dCombo>1?dCombo+'x':'')+(e<70?' PERFECT':e<140?' GOOD':' MISS');
+  document.getElementById('dscore').textContent=dScore;document.getElementById('dcombo').textContent=dBest;
+  document.getElementById('dhappy').textContent=dHappy;
+}
+function dLoop(){ requestAnimationFrame(dLoop); if(!document.getElementById('dance').classList.contains('on'))return;
+  DX.clearRect(0,0,220,220); const tt=performance.now()-dT0,ph=(tt%dBeat)/dBeat,bp=Math.abs(Math.sin(ph*Math.PI));
+  let b=bp*10,sq=(1-bp)*0.4,cg=0.2+0.6*Math.pow(1-ph,2); const since=performance.now()-dLastHit;
+  if(since<260){const k=1-since/260;b+=16*k;cg=Math.min(1,cg+0.5*k);}
+  DX.strokeStyle='rgba(111,240,255,'+(0.25+0.5*ph)+')';DX.lineWidth=2;DX.beginPath();DX.arc(110,118,Math.max(14,14+88*(1-ph)),0,6.28);DX.stroke();
+  drawPet(DX,110,118,b,sq,cg,since<260?'happy':'idle');
+  dParts=dParts.filter(p=>p.l>0);for(const p of dParts){p.x+=p.vx;p.y+=p.vy;p.vy+=0.15;p.l-=0.03;DX.globalAlpha=Math.max(0,p.l);DX.fillStyle=p.c;DX.fillRect(p.x,p.y,3,3);}DX.globalAlpha=1;
+}
+dLoop();
+document.getElementById('dance').addEventListener('pointerdown',e=>{if(e.target.dataset.close===undefined)dTap();});
+
+// ── Verify my pet — re-derive from on-ledger history + a live "Rig it" demo that shows the detection ──
+const VBTN='padding:8px 12px;border-radius:8px;border:1px solid var(--glow);background:#0e3a4a;color:var(--hot);cursor:pointer;font-size:13px';
+const VINTRO=`The rules are open-source and the pet's whole state lives on-chain in a Dynamic NFT. `+
+  `Anyone re-runs the rules over this pet's ledger history and checks it matches the on-ledger state — <b>you don't trust us, you check.</b><br><br>`;
+let vLast=null, vRig=null;
+const VF=[['stage',s=>STAGE[s.stage]||s.stage],['form',s=>FORM[s.form]||'-'],['health',s=>s.health],['hunger',s=>s.hunger],['happiness',s=>s.happiness],['care',s=>s.care]];
+function pickRig(d){ if((d.form||0)<4) return {k:'form', real:FORM[d.form]||'-', fake:'legendary'};
+  if(d.health<100) return {k:'health', real:d.health, fake:100};
+  return {k:'hunger', real:d.hunger, fake:100}; }
+function renderVerify(){
+  const V=document.getElementById('vbody'); if(!vLast) return;
+  const {derived:d,current:c,interactions:n}=vLast, rig=vRig;
+  const rows=VF.map(([label,fn])=>{ const mism=rig&&rig.k===label; const cv=mism?rig.fake:fn(c);
+    return `<tr><td style="opacity:.6;padding:2px 10px 2px 0">${label}</td><td style="padding:2px 12px">${fn(d)}</td><td class="${mism?'bad':'ok'}" style="padding:2px 0">${cv}${mism?' ✗':' ✓'}</td></tr>`; }).join('');
+  const banner=rig
+    ? `<span class="bad">🚨 DIVERGED — CAUGHT. The operator wrote <b>${rig.k}=${rig.fake}</b>, but re-running the open rules over the ledger says <b>${rig.k}=${rig.real}</b>. Anyone re-derives it and sees the lie.</span>`
+    : `<span class="ok">✅ VERIFIED — all ${n} interaction${n===1?'':'s'} reproduce from the open rules. Re-derived == on-ledger. The game played fair.</span>`;
+  const table=`<table style="margin:10px 0;font-size:13px;border-collapse:collapse"><tr style="opacity:.55"><td></td><td style="padding:0 12px">rules say</td><td>on-ledger</td></tr>${rows}</table>`;
+  const btn=rig?`<button id="vrigreset" style="${VBTN}">↺ reset — show the honest record</button>`
+               :`<button id="vrig" style="${VBTN}">😈 Simulate a cheating operator</button>`;
+  V.innerHTML=VINTRO+banner+table+btn+
+    `<div style="opacity:.55;margin-top:8px;font-size:12px">This "rig" is a client-side simulation of the check — it never touches the ledger. It shows what the verifier does: compare a faithful replay to the on-chain state. A real operator lie fails exactly this way, for everyone.</div>`;
+  const rb=document.getElementById('vrig'); if(rb) rb.onclick=()=>{ vRig=pickRig(d); renderVerify(); };
+  const rr=document.getElementById('vrigreset'); if(rr) rr.onclick=()=>{ vRig=null; renderVerify(); };
+}
+document.getElementById('verify').onclick=async ()=>{
+  open('vov'); vRig=null; const V=document.getElementById('vbody');
+  if(!xamanReady||!petNid){ vLast=null; V.innerHTML=VINTRO+`<span class="ok">✅ LOCAL DEMO — running the open rules in your browser; nothing on-ledger to dispute.</span>`; return; }
+  V.innerHTML=VINTRO+`<span style="opacity:.7">Re-deriving from ledger history…</span>`;
+  const v=await XamanBridge.verify(petNid);
+  if(v&&v.verdict==='PASS'&&v.derived&&v.current){ vLast={derived:v.derived,current:v.current,interactions:v.interactions}; renderVerify(); }
+  else if(v&&v.verdict==='DIVERGED'){ vLast=null; V.innerHTML=VINTRO+`<span class="bad">🚨 DIVERGED — the on-ledger state does NOT match a faithful replay. ${v.reason||''}</span>`; }
+  else { vLast=null; V.innerHTML=VINTRO+`<span style="opacity:.7">Could not verify right now (${(v&&v.reason)||'no backend'}).</span>`; }
+};
+
+// overlay open/close
+function open(id){document.getElementById(id).classList.add('on');}
+document.querySelectorAll('[data-close]').forEach(x=>x.onclick=()=>{document.getElementById(x.dataset.close).classList.remove('on');if(x.dataset.close==='dance')dRun=false;});
+addEventListener('keydown',e=>{if(e.code==='Space'&&document.getElementById('dance').classList.contains('on')){e.preventDefault();dTap();}});
+
+// ── Market Mood: start polling the (off-chain fallback) XRP/USD price ──
+// Cosmetic overlay only. Degrades gracefully to 'calm'/stale if the fetch is blocked.
+if(window.MarketMood) MarketMood.start();
+</script>
+</body>
+</html>

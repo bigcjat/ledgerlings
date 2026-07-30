@@ -83,6 +83,30 @@ if (fs.existsSync(appPath)) {
   }
 }
 
+// ---- 4. docs/testnet.html must be build/app.html with ONLY the known substitutions ---------
+// It is a derived copy, so it silently goes stale whenever app.html changes. That is precisely the
+// drift this script exists to catch, and creating it without a check would have reintroduced the
+// problem in a new place.
+console.log('\n4. docs/testnet.html is in step with build/app.html');
+const tnPath = path.join(DOCS, 'testnet.html');
+if (fs.existsSync(tnPath) && fs.existsSync(appPath)) {
+  const SUBS = [
+    ["window.LEDGERLINGS_ISSUER='rDe4tWiu8hVNQEySmfzms47M6qt4JSWf6L'", "window.LEDGERLINGS_ISSUER='rE6WuQHWWJbgwoLYnSvbywaxH84K1tjjQm'"],
+    ["window.LEDGERLINGS_BACKEND='https://ledgerlings-backend-production.up.railway.app'", "window.LEDGERLINGS_BACKEND='https://ledgerlings-testnet-production.up.railway.app'"],
+    ['<title>Ledgerlings</title>', '<title>Ledgerlings (testnet)</title>'],
+  ];
+  let expected = fs.readFileSync(appPath, 'utf8');
+  for (const [from, to] of SUBS) {
+    if (!expected.includes(from)) { note(`XX build/app.html no longer contains: ${from.slice(0, 60)}`); problems.push(`the testnet substitution "${from.slice(0, 50)}..." no longer matches build/app.html; update check_docs_sync.cjs and regenerate docs/testnet.html`); }
+    expected = expected.replace(from, to);
+  }
+  const actual = fs.readFileSync(tnPath, 'utf8');
+  // the banner is the one intentional addition, so compare with it stripped out
+  const stripBanner = t => t.replace(/<div style="background:#7a4a00[\s\S]*?<\/div>\n(?=<div id="app">)/, '');
+  if (stripBanner(actual) === expected) note('ok docs/testnet.html == build/app.html + known substitutions');
+  else { note('XX docs/testnet.html has drifted from build/app.html'); problems.push('docs/testnet.html is stale; regenerate it from build/app.html with the testnet substitutions'); }
+} else note('?  no docs/testnet.html (skipped)');
+
 console.log('');
 if (problems.length) {
   console.error(`FAIL: ${problems.length} problem(s) — the deployed site does not match source\n`);
