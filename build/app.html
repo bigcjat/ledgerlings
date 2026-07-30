@@ -41,7 +41,7 @@
   .toast.on{opacity:1}
 </style>
 <!-- Xaman xApp wiring. Fill these in the xApp / deployment; empty = standalone local-demo mode. -->
-<script>window.XAMAN_API_KEY='';window.LEDGERLINGS_ISSUER='rDe4tWiu8hVNQEySmfzms47M6qt4JSWf6L';window.LEDGERLINGS_BACKEND='https://ledgerlings-backend-production.up.railway.app';</script>
+<script>window.XAMAN_API_KEY='33f663c6-6c51-4828-b92f-9f31da87a8d0';window.LEDGERLINGS_ISSUER='rDe4tWiu8hVNQEySmfzms47M6qt4JSWf6L';window.LEDGERLINGS_BACKEND='https://ledgerlings-backend-production.up.railway.app';</script>
 <script src="https://xaman.app/assets/cdn/xumm.min.js"></script>
 <script src="pet_rules.js"></script>
 <script src="xaman_bridge.js"></script>
@@ -73,6 +73,8 @@
        The xApp path takes precedence whenever it is available; this never competes with it. -->
   <div id="keyless" style="display:none;margin-top:10px;padding:11px;border:1px solid var(--glow);border-radius:10px;background:#0e3a4a;text-align:left">
     <div style="color:var(--hot);margin-bottom:7px">🐣 Adopt a real one on XRPL mainnet</div>
+    <button id="kSign" style="display:none;width:100%;padding:9px;margin-bottom:9px;border-radius:8px;border:1px solid var(--glow);background:#12586b;color:var(--hot);font:inherit;font-weight:bold;cursor:pointer">Sign in with Xaman</button>
+    <div id="kOr" style="display:none;opacity:.55;font-size:11px;text-align:center;margin-bottom:8px">or adopt without connecting a wallet</div>
     <div style="opacity:.75;font-size:12px;margin-bottom:8px">Paste any XRPL address. We mint your Ledgerling on mainnet, you own the record, and you can verify it yourself. No wallet connection, nothing to install, no fee to you.</div>
     <input id="kAddr" placeholder="r..." autocomplete="off" spellcheck="false"
       style="width:100%;box-sizing:border-box;padding:8px;border-radius:8px;border:1px solid var(--glow);background:#062430;color:#cfefff;font:inherit;font-size:13px">
@@ -395,6 +397,21 @@ async function keylessAdopt(addr){
     document.getElementById('keyless').style.display='block';
     document.getElementById('kGo').onclick=()=>keylessAdopt(document.getElementById('kAddr').value.trim());
     document.getElementById('kAddr').addEventListener('keydown',e=>{ if(e.key==='Enter') document.getElementById('kGo').click(); });
+    // Xaman sign-in, when an API key is configured. Offered as a button rather than run at load,
+    // because authorize() opens a popup and browsers block popups that are not user-initiated.
+    if(XamanBridge.canSignIn && XamanBridge.canSignIn()){
+      const sb=document.getElementById('kSign'); sb.style.display='block';
+      document.getElementById('kOr').style.display='block';
+      sb.onclick=async ()=>{
+        sb.disabled=true; sb.textContent='opening Xaman…';
+        const acct=await XamanBridge.signIn();
+        sb.disabled=false; sb.textContent='Sign in with Xaman';
+        if(!acct){ document.getElementById('kMsg').textContent='sign-in cancelled'; return; }
+        xamanReady=true;                       // interactions can now be signed rather than copied out
+        document.getElementById('kAddr').value=acct;
+        await keylessAdopt(acct);              // same public /adopt; the signed-in account owns it
+      };
+    }
   }
   setMode();
 })();

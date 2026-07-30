@@ -23,7 +23,14 @@ regex = '''\bs[1-9A-HJ-NP-Za-km-z]{28}\b'''
 keywords = ["s"]
 
 [allowlist]
-description = "XRPL classic addresses are public identifiers, not secrets"
+description = "Public identifiers that are not secrets"
 regexes = [
+  # XRPL classic addresses: derived from the public key, published so people can pay you.
   '''\br[1-9A-HJ-NP-Za-km-z]{24,33}\b''',
+  # The Xaman OAuth2 client id for Ledgerlings. This is a PUBLIC client identifier and belongs in
+  # the page source: the browser flow uses PKCE precisely so a public client needs no secret.
+  # Allowlisted as an exact literal, NOT as a UUID pattern — a general UUID rule would hide real
+  # credentials. The Xaman API SECRET is a different value, lives only in the Xaman console, and
+  # must never appear in this repo; nothing here weakens detection of it.
+  '''33f663c6-6c51-4828-b92f-9f31da87a8d0''',
 ]

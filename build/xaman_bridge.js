@@ -25,27 +25,71 @@ const XamanBridge = (() => {
     catch { /* no config → no tag */ }
   }
 
+  /* Two contexts, and they are NOT interchangeable:
+   *
+   *   xApp    – opened inside Xaman. The OTT resolves the user automatically, and xumm.xapp exists.
+   *   browser – an ordinary web page. xumm.xapp is UNDEFINED here (verified against the live SDK),
+   *             and the user must be resolved with authorize(), which opens a popup and therefore
+   *             has to be triggered by a click. It cannot run at page load.
+   *
+   * xumm.runtime = { cli, browser, xapp } is the discriminator the SDK itself provides.
+   * init() therefore never authorizes on its own: in a browser it reports the not-signed-in state and
+   * leaves the page to offer a sign-in button, falling back to keyless adopt if the user declines. */
+  let isXapp = false, sdkReady = false;
+
   async function init() {
     await loadConfig();
     if (!window.Xumm || !KEY) { console.info('[xaman] no SDK/API key → local demo mode'); return false; }
     try {
-      xumm = new Xumm(KEY);                          // xApp context auto-resolves the user via the OTT
+      xumm = new Xumm(KEY);
+      isXapp = !!(xumm.runtime && xumm.runtime.xapp);
+      sdkReady = true;
+      if (!isXapp) { console.info('[xaman] browser context → sign-in is available on demand'); return false; }
+
+      // xApp: the OTT resolves the user with no interaction.
       await new Promise((res) => {
         xumm.on('success', res); xumm.on('ready', res); setTimeout(res, 4000);  // resolve on first signal
       });
       account = await xumm.user.account;
       ready = !!account;
-      console.info('[xaman] ready as', account, '· sourceTag', sourceTag);
+      console.info('[xaman] xApp ready as', account, '· sourceTag', sourceTag);
       return ready;
     } catch (e) { console.warn('[xaman] init failed → local mode:', e); return false; }
   }
+
+  /* Browser sign-in. MUST be called from a click: authorize() opens a popup and browsers block
+   * popups that are not user-initiated. Resolves to the account, or null if declined/failed. */
+  async function signIn() {
+    if (!sdkReady || !xumm || isXapp) return null;
+    try {
+      await xumm.authorize();
+      account = await xumm.user.account;
+      ready = !!account;
+      console.info('[xaman] signed in as', account);
+      return account;
+    } catch (e) { console.warn('[xaman] sign-in failed:', e); return null; }
+  }
+
+  async function signOut() {
+    try { xumm && (await xumm.logout()); } catch { /* best effort */ }
+    account = null; ready = false;
+  }
+
+  /* xumm.payload is a lazy Promise that resolves to the payload API. Awaiting it is correct whether
+   * it arrives as a promise or as a plain object, so both contexts use this. */
+  const payloadApi = async () => await xumm.payload;
+
+  /* Is a Xaman sign-in possible at all right now? The page uses this to decide whether to show a
+   * "Sign in with Xaman" button next to keyless adopt. */
+  function canSignIn() { return sdkReady && !isXapp && !ready; }
 
   /* Create + open a Payment(+op memo) sign request; resolve {signed, uuid, txid} or {local:true}. */
   async function interact(op, nid) {
     if (!ready || !xumm) return { local: true };
     // memo = "<op>|<nid>" so the on-ledger verifier can attribute this interaction to THIS pet.
     const memoData = nid ? `${op}|${nid}` : op;
-    const payload = await xumm.payload.create({
+    const P = await payloadApi();
+    const request = {
       txjson: {
         TransactionType: 'Payment',
         Destination: ISSUER,
@@ -54,7 +98,25 @@ const XamanBridge = (() => {
         ...(sourceTag != null ? { SourceTag: sourceTag } : {}),   // credit THIS player's account on the Make Waves leaderboard
       },
       custom_meta: { identifier: 'ledgerlings-' + op, instruction: `Ledgerlings: ${op} your pet` },
-    });
+    };
+
+    // BROWSER: create + subscribe, and hand the user the deep link. There is no xumm.xapp here, so
+    // openSignRequest does not exist; calling it would throw. The subscription resolves when the
+    // payload is signed, declined or expires.
+    if (!isXapp) {
+      const sub = await P.createAndSubscribe(request, (ev) => {
+        if (Object.keys(ev.data).indexOf('signed') > -1) return ev.data;   // resolves the subscription
+      });
+      const url = sub && sub.created && sub.created.next && sub.created.next.always;
+      if (url) window.open(url, '_blank', 'noopener');                     // Xaman deep link / QR page
+      const res = await sub.resolved;
+      const signed = !!(res && res.signed);
+      let txid = null;
+      if (signed) { try { const full = await P.get(sub.created.uuid); txid = full && full.response && full.response.txid; } catch { /* best effort */ } }
+      return { signed, uuid: sub.created && sub.created.uuid, txid };
+    }
+
+    const payload = await P.create(request);
     xumm.xapp.openSignRequest(payload);              // open the sign UI inside Xaman
     return await new Promise((res) => {
       // openSignRequest resolves via the xApp 'payload' event (NOT xumm.on). Per docs the event is
@@ -66,7 +128,7 @@ const XamanBridge = (() => {
         xumm.xapp.off && xumm.xapp.off('payload', onResult);
         const signed = data.reason === 'SIGNED';
         let txid = null;
-        if (signed) { try { const full = await xumm.payload.get(data.uuid); txid = full && full.response && full.response.txid; } catch (e) { /* txid best-effort */ } }
+        if (signed) { try { const full = await (await payloadApi()).get(data.uuid); txid = full && full.response && full.response.txid; } catch (e) { /* txid best-effort */ } }
         res({ signed, uuid: data.uuid, txid });
       };
       xumm.xapp.on('payload', onResult);
@@ -97,5 +159,7 @@ const XamanBridge = (() => {
     try { const j = await (await fetch(`${BACKEND}/now`)).json(); return Number.isInteger(j && j.ledger) ? j.ledger : null; } catch { return null; }
   }
 
-  return { init, interact, fetchPet, adopt, verify, now, get account() { return account; }, get ready() { return ready; }, get sourceTag() { return sourceTag; } };
+  return { init, signIn, signOut, canSignIn, interact, fetchPet, adopt, verify, now,
+    get account() { return account; }, get ready() { return ready; }, get isXapp() { return isXapp; },
+    get sourceTag() { return sourceTag; } };
 })();
