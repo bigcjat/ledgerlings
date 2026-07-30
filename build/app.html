@@ -133,6 +133,13 @@ const DEMO_LPS=120;                       // ledgers/sec in the demo (a "day" ~ 
 let OWNER='rDemoOwner', petNid=null, xamanReady=false;     // OWNER becomes the Xaman account in real mode
 let pet=genesis(0,OWNER), now0=performance.now(), nowLedger=()=> Math.floor((performance.now()-now0)/1000*DEMO_LPS);
 
+// Unified clock. A LIVE pet's birth is a real validated ledger index (~105.9M on mainnet), while the
+// demo clock counts up from zero at boot. Mixing them makes age = now - birth wildly negative, which
+// is how a freshly adopted mainnet pet rendered as "day -4905". Declared here, above the render loop,
+// because tick() runs synchronously further down and `let` bindings are not hoisted.
+let liveLedger0=null, liveT0=0;
+const nowL=()=> (petNid && liveLedger0!=null) ? liveLedger0 + Math.floor((performance.now()-liveT0)/4000) : nowLedger();
+
 // ── the same procedural pet (mood-aware) ──
 const INK='#0B1B2B',SHA='#0E3A4A',BASE='#1E8A9C',LGT='#3FB6C4',HI='#7FE0E6',GLOW='#19C3E6',HOT='#6FF0FF',
       WHT='#E8FFFF',EYEW='#F2FBFC',BLUSH='#E86A8A',GREY='#9AA8B0';
@@ -215,7 +222,10 @@ let lastJoy=-1e9;
 function tick(){
   requestAnimationFrame(tick);
   // live decay: re-derive state from the advancing clock (cheap; re-applies decay via a no-op step)
-  pet=step(pet,0,nowLedger(),OWNER);          // op 0 = pure decay/age/death pass
+  // op 0 = pure decay/age/death pass. Uses the UNIFIED clock: a live pet must be aged against the
+  // real validated ledger, never the demo clock. Before this, every animation frame recomputed a
+  // live pet's state from the wrong epoch and overwrote what the poller had just fetched.
+  pet=step(pet,0,nowL(),OWNER);
   X.clearRect(0,0,200,220);
   const t=performance.now()/1000, bp=Math.abs(Math.sin(t*2.2));
   const mkt=(window.MarketMood?MarketMood.get():null);
@@ -283,10 +293,7 @@ document.getElementById('moodBadge').onclick=()=>{
 
 // ── interactions (local demo = apply rules now; PRODUCTION = sign a Payment+memo via Xaman, issuer modifies the dNFT) ──
 const OPNUM={feed:FEED,play:PLAY,clean:CLEAN,heal:HEAL};
-// unified clock: LIVE pets use the real validated ledger (fetched from the backend); local demo uses the boot clock.
-let liveLedger0=null, liveT0=0;
 async function syncLedger(){ const l=await XamanBridge.now(); if(l){ liveLedger0=l; liveT0=performance.now(); refreshOps(); } }
-const nowL=()=> (petNid && liveLedger0!=null) ? liveLedger0 + Math.floor((performance.now()-liveT0)/4000) : nowLedger();
 // feed/play are cooldown-gated (no-farming). Gray them out while on cooldown so no Xaman signature is wasted on a no-op.
 function opReady(op){ if(op!=='feed'&&op!=='play') return true; const last=op==='feed'?pet.last_feed:pet.last_play; return !last || (nowL()-last)>=COOLDOWN; }
 function refreshOps(){ document.querySelectorAll('[data-op]').forEach(b=>{ const op=b.dataset.op; if(op==='feed'||op==='play'){ const rdy=opReady(op); b.disabled=!rdy; b.style.opacity=rdy?'':'.4'; b.title=rdy?'':'on cooldown — feeding/playing again now is a no-op (no-farming rule)'; } }); }
