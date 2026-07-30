@@ -1,0 +1,30 @@
+name: docs-sync
+
+# GitHub Pages serves docs/, while the app is developed in build/. Nothing in git enforces that the
+# two agree, so the deployed site can silently drift from source. On 2026-07-30 the live site had
+# been 404ing on market_mood.js: the file existed in build/ and was referenced by the page, but had
+# never been copied to docs/, so MarketMood was undefined and the mood badge was broken for every
+# visitor. It was found by opening the published page and reading the browser console.
+#
+# This job fails the push when docs/ is stale or incomplete, which is the only moment the fix is
+# cheap. See build/check_docs_sync.cjs for what it checks and why.
+
+on:
+  push:
+    paths: ['build/**', 'docs/**', '.github/workflows/docs-sync.yml']
+  pull_request:
+    paths: ['build/**', 'docs/**', '.github/workflows/docs-sync.yml']
+  workflow_dispatch:
+
+jobs:
+  docs-sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      # No dependencies: the checker is plain Node using fs and path only, so there is nothing to
+      # install and nothing that can break this job for reasons unrelated to what it tests.
+      - name: docs/ must match build/
+        run: node build/check_docs_sync.cjs
