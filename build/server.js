@@ -52,6 +52,9 @@ const AUTO_AWARD = process.env.AUTO_AWARD !== '0';
 const BATTLE_TAXON = 7781;
 const BATTLE_FEE_BPS = Number(process.env.BATTLE_FEE_BPS || 500);        // platform cut of the pot (5%)
 // Challenger pins a FUTURE ledger N >= now + margin so its hash is unknowable at commit (unbiasable seed).
+// Ledgers between the challenge landing and the ledger whose hash seeds it. ~4s each, so 20 is
+// roughly 80 seconds: long enough that the seed cannot be known at commitment, short enough that a
+// player is not left waiting. Counted from the CHALLENGE's ledger, not from when the payload was built.
 const BATTLE_LEDGER_MARGIN = Number(process.env.BATTLE_LEDGER_MARGIN || 20);
 const BATTLE_MEMO = 'ledgerlings/battle';
 // House ladder: PUBLISHED NPC opponents (open stat blocks, versioned). Because the opponent's stats are public
@@ -395,9 +398,28 @@ async function loadBattle(c, issuer, battleId) {
 // ladder (vs a published house NPC): no accept, no wager. Free, provably fair, solo-climbable.
 async function resolveLadder(c, w, battleId, b) {
   const issuer = w.classicAddress;
-  const { aNid, rung, N, ownerA } = b.challenge;
+  const { aNid, rung, ownerA, lseq } = b.challenge;
   const npc = LADDER[rung];
   if (!npc) return { error: 'invalid ladder rung', rung };
+
+  // SEED LEDGER IS DERIVED, NOT TAKEN FROM THE MEMO.
+  //
+  // /sign pins N = current + margin when the PAYLOAD IS BUILT, but the player signs whenever they
+  // get round to it. On 2026-07-30 a real challenge was built pinning 105955044 and landed in
+  // 105955051, so the "unknowable future ledger" had already closed seven ledgers before the
+  // challenge was even recorded. Its hash was public at the moment of commitment, and the whole
+  // unriggability claim evaporates: a player who waits can read the seed before deciding to sign.
+  //
+  // Deriving the seed ledger from the ledger the challenge LANDED in fixes that by construction. It
+  // is strictly in the future relative to the commitment no matter how long the player takes, and it
+  // is still fully public and re-derivable by anyone reading the challenge transaction.
+  //
+  // The memo's N is kept only to detect the stale case and say so.
+  const claimedN = b.challenge.N;
+  if (!lseq) return { error: 'challenge ledger unknown', battleId };
+  const N = lseq + BATTLE_LEDGER_MARGIN;
+  const staleCommitment = Number.isInteger(claimedN) && claimedN <= lseq;
+
   const lh = await ledgerHashOf(c, N);
   if (!lh) return { error: 'pinned ledger not validated yet', N };
   const npcId = 'NPC:' + npc.id;
@@ -416,7 +438,10 @@ async function resolveLadder(c, w, battleId, b) {
     const cr = (await c.submitAndWait(w.sign(cp).tx_blob)).result; card = { nid: cr.meta.nftoken_id, result: cr.meta.TransactionResult };
   } catch (e) { card = { error: e.message }; } }
   return { battleId, ladder: true, opponent: npc.name, rung, winner: playerWon ? 'player' : (d.winner === null ? 'DRAW' : 'NPC'),
-    scoreA: d.scoreA, scoreB: d.scoreB, rollA: d.rollA, rollB: d.rollB, powerA: d.powerA, powerB: d.powerB, seed, card };
+    scoreA: d.scoreA, scoreB: d.scoreB, rollA: d.rollA, rollB: d.rollB, powerA: d.powerA, powerB: d.powerB,
+    seed, seedLedger: N, challengeLedger: lseq, claimedN,
+    staleCommitment: staleCommitment || undefined,   // the memo pinned a ledger that had already closed
+    card };
 }
 
 async function resolveBattleTx(c, w, battleId) {
@@ -476,14 +501,25 @@ async function verifyBattle(c, issuer, battleId) {
   if (!b.challenge) return { ok: false, verdict: 'NOT_FOUND', reason: 'no challenge with this id' };
   if (b.challenge.npc) {   // ladder: opponent stats come from the PUBLISHED NPC table (that is why it stays provably fair)
     if (!b.result) return { ok: false, verdict: 'UNRESOLVED', reason: 'not resolved yet' };
-    const { aNid, rung, N } = b.challenge, npc = LADDER[rung];
+    const { aNid, rung, lseq } = b.challenge, npc = LADDER[rung];
     if (!npc) return { ok: false, verdict: 'BAD_RUNG', reason: 'invalid ladder rung' };
+    // Same derivation as resolveLadder: seed ledger counted from the ledger the challenge LANDED in,
+    // so it is always after the commitment. Verifying against the memo's N instead would confirm the
+    // arithmetic while missing whether the seed was knowable when the player signed — which is the
+    // only property that makes this fair. A verifier that cannot fail on that is not a verifier.
+    const claimedN = b.challenge.N;
+    const N = (lseq || 0) + BATTLE_LEDGER_MARGIN;
+    const staleCommitment = Number.isInteger(claimedN) && lseq && claimedN <= lseq;
     const lh = await ledgerHashOf(c, N); if (!lh) return { ok: false, verdict: 'ERROR', reason: 'pinned ledger not available' };
     const npcId = 'NPC:' + npc.id, seed = seedFor(lh, battleId, aNid, npcId);
     const h = await loadHistory(c, issuer, aNid), sA = stateAtLedger(h.genesis, h.interactions, N);
     const d = BR.resolveBattle(seed, sA, npc.stats, aNid, npcId), derivedWinner = d.winner === null ? 'DRAW' : d.winner;
     const ok = derivedWinner === b.result.winnerNid && d.scoreA === b.result.scoreA && d.scoreB === b.result.scoreB;
     return { ok, verdict: ok ? 'PASS' : 'FAIL', battleId, ladder: true, opponent: npc.name,
+      seedLedger: N, challengeLedger: lseq, claimedN,
+      ...(staleCommitment ? { warning: 'STALE_COMMITMENT', warningDetail:
+        `the challenge memo pinned ledger ${claimedN}, which had already closed when the challenge landed in ${lseq}. `
+        + 'That seed was public at signing time. Resolution used the derived ledger instead.' } : {}),
       derived: { winner: derivedWinner, scoreA: d.scoreA, scoreB: d.scoreB }, recorded: b.result,
       reason: ok ? 'ladder result re-derives from the pinned ledger hash + the published NPC stats + open rules' : 'recorded ladder result does not match a faithful replay' };
   }

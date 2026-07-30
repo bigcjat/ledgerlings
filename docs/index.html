@@ -7,14 +7,18 @@
 <style>
   :root{--ink:#0B1B2B;--base:#1E8A9C;--glow:#19C3E6;--hot:#6FF0FF;--blush:#E86A8A;--grey:#9AA8B0}
   *{box-sizing:border-box;-webkit-tap-highlight-color:transparent;user-select:none;font-family:ui-monospace,Menlo,monospace}
-  html,body{margin:0;height:100%;background:radial-gradient(120% 80% at 50% 25%,#0e3a4a,#0b1b2b 75%);color:#dff;overflow:hidden}
-  #app{max-width:420px;margin:0 auto;height:100%;display:flex;flex-direction:column;padding:14px;gap:10px}
+  /* The page was overflow:hidden with a 100%-height app, which was fine when it was just the pet
+     and five buttons. The adopt box and the ladder made it taller than a phone viewport, and
+     everything below the fold became unreachable. Scroll vertically, never horizontally. */
+  html,body{margin:0;min-height:100%;background:radial-gradient(120% 80% at 50% 25%,#0e3a4a,#0b1b2b 75%);
+    color:#dff;overflow-x:hidden;overflow-y:auto;-webkit-overflow-scrolling:touch}
+  #app{max-width:420px;margin:0 auto;min-height:100%;display:flex;flex-direction:column;padding:14px;gap:10px;padding-bottom:28px}
   #top{display:flex;justify-content:space-between;align-items:center;font-size:13px;opacity:.9}
   #top b{color:var(--hot)}
   #moodBadge{font-size:13px;cursor:pointer;padding:2px 8px;border-radius:12px;background:#0e3a4a;
     border:1px solid #1c5a6b;white-space:nowrap}#moodBadge:active{transform:translateY(1px)}
   #moodBadge.stale{opacity:.55}
-  #stage{position:relative;flex:1;display:flex;align-items:center;justify-content:center}
+  #stage{position:relative;flex:1 0 auto;min-height:240px;display:flex;align-items:center;justify-content:center}
   canvas{image-rendering:pixelated}
   #bars{display:flex;flex-direction:column;gap:7px}
   .bar{display:flex;align-items:center;gap:8px;font-size:12px}
