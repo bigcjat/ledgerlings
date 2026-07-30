@@ -78,18 +78,28 @@ const XamanBridge = (() => {
       return w;
     };
 
+    // WATCH for the popup rather than guessing when it happens. A fixed short wait missed it: the SDK
+    // does its async setup first and calls window.open well after the click.
+    let notified = false;
+    const watch = setInterval(() => {
+      if (!notified && blocked && popupUrl && typeof onFallbackUrl === 'function') {
+        notified = true; onFallbackUrl(popupUrl);
+      }
+    }, 300);
+
+    // Cap the wait. authorize() never rejects when the popup is blocked, so without this the caller
+    // is left awaiting a promise that cannot settle and the button stays disabled forever.
+    const timeout = new Promise(r => setTimeout(() => r('TIMEOUT'), 180000));
+
     try {
-      const authorized = xumm.authorize();
-      // Give the SDK a moment to request the popup, then report a blocked one rather than hanging.
-      await new Promise(r => setTimeout(r, 1200));
-      if (blocked && popupUrl && typeof onFallbackUrl === 'function') onFallbackUrl(popupUrl);
-      await authorized;
+      const outcome = await Promise.race([xumm.authorize().then(() => 'OK').catch(e => e), timeout]);
+      if (outcome === 'TIMEOUT') { console.warn('[xaman] sign-in timed out'); return null; }
       account = await xumm.user.account;
       ready = !!account;
       console.info('[xaman] signed in as', account);
       return account;
     } catch (e) { console.warn('[xaman] sign-in failed:', e); return null; }
-    finally { window.open = realOpen; }
+    finally { clearInterval(watch); window.open = realOpen; }
   }
 
   async function signOut() {
