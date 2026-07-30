@@ -59,15 +59,37 @@ const XamanBridge = (() => {
 
   /* Browser sign-in. MUST be called from a click: authorize() opens a popup and browsers block
    * popups that are not user-initiated. Resolves to the account, or null if declined/failed. */
-  async function signIn() {
+  async function signIn(onFallbackUrl) {
     if (!sdkReady || !xumm || isXapp) return null;
+
+    // The SDK does async work before it calls window.open, so by the time the popup is requested the
+    // browser no longer considers it user-initiated and blocks it. authorize() then waits forever for
+    // a callback that cannot arrive: no popup, no error, no rejection. Observed on a desktop browser,
+    // and reproduced headlessly — the button simply sat on "opening Xaman…".
+    //
+    // So: capture the URL the SDK wants to open, and if the popup was blocked, hand it back to the
+    // page. A link the user clicks IS user-initiated, so it always opens.
+    let popupUrl = null, blocked = false;
+    const realOpen = window.open;
+    window.open = function (...args) {
+      popupUrl = args[0];
+      const w = realOpen.apply(window, args);
+      if (!w || w.closed || typeof w.closed === 'undefined') blocked = true;
+      return w;
+    };
+
     try {
-      await xumm.authorize();
+      const authorized = xumm.authorize();
+      // Give the SDK a moment to request the popup, then report a blocked one rather than hanging.
+      await new Promise(r => setTimeout(r, 1200));
+      if (blocked && popupUrl && typeof onFallbackUrl === 'function') onFallbackUrl(popupUrl);
+      await authorized;
       account = await xumm.user.account;
       ready = !!account;
       console.info('[xaman] signed in as', account);
       return account;
     } catch (e) { console.warn('[xaman] sign-in failed:', e); return null; }
+    finally { window.open = realOpen; }
   }
 
   async function signOut() {

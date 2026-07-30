@@ -505,9 +505,18 @@ async function keylessAdopt(addr){
       document.getElementById('kOr').style.display='block';
       sb.onclick=async ()=>{
         sb.disabled=true; sb.textContent='opening Xaman…';
-        const acct=await XamanBridge.signIn();
+        const msg=document.getElementById('kMsg');
+        msg.textContent='a Xaman window should open. Scan the QR with Xaman on your phone.';
+        // If the browser blocked the popup, the SDK would wait forever with nothing on screen.
+        // Show the link instead: clicking it is user-initiated, so it always opens.
+        const acct=await XamanBridge.signIn(url=>{
+          msg.innerHTML='Your browser blocked the Xaman window. '+
+            `<a href="${url}" target="_blank" rel="noopener" style="color:var(--hot)">Open the Xaman sign-in</a>`+
+            ' and scan the QR with Xaman on your phone.';
+        });
         sb.disabled=false; sb.textContent='Sign in with Xaman';
-        if(!acct){ document.getElementById('kMsg').textContent='sign-in cancelled'; return; }
+        if(!acct){ if(!/blocked/.test(msg.textContent)) msg.textContent='sign-in did not complete'; return; }
+        msg.textContent='';
         xamanReady=true;                       // interactions can now be signed rather than copied out
         document.getElementById('kAddr').value=acct;
         await keylessAdopt(acct);              // same public /adopt; the signed-in account owns it
