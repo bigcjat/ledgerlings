@@ -138,7 +138,14 @@ let pet=genesis(0,OWNER), now0=performance.now(), nowLedger=()=> Math.floor((per
 // is how a freshly adopted mainnet pet rendered as "day -4905". Declared here, above the render loop,
 // because tick() runs synchronously further down and `let` bindings are not hoisted.
 let liveLedger0=null, liveT0=0;
-const nowL=()=> (petNid && liveLedger0!=null) ? liveLedger0 + Math.floor((performance.now()-liveT0)/4000) : nowLedger();
+// Returns null for a LIVE pet whose real ledger height is not known yet. It must NOT fall back to
+// the demo clock in that window: a frame that ages a live pet with the demo clock writes a tiny
+// last_ix into it, and the next frame — once the real height arrives — sees a gap of ~105 million
+// ledgers, caps decay at 100, and kills the pet outright. That is what rendered a 30-minute-old
+// mainnet pet as "gone (neglect)". Callers skip the tick instead of guessing.
+const nowL=()=> petNid
+  ? (liveLedger0!=null ? liveLedger0 + Math.floor((performance.now()-liveT0)/4000) : null)
+  : nowLedger();
 
 // ── the same procedural pet (mood-aware) ──
 const INK='#0B1B2B',SHA='#0E3A4A',BASE='#1E8A9C',LGT='#3FB6C4',HI='#7FE0E6',GLOW='#19C3E6',HOT='#6FF0FF',
@@ -225,7 +232,8 @@ function tick(){
   // op 0 = pure decay/age/death pass. Uses the UNIFIED clock: a live pet must be aged against the
   // real validated ledger, never the demo clock. Before this, every animation frame recomputed a
   // live pet's state from the wrong epoch and overwrote what the poller had just fetched.
-  pet=step(pet,0,nowL(),OWNER);
+  const _n=nowL();
+  if(_n!=null) pet=step(pet,0,_n,OWNER);   // null = live pet, real ledger height not known yet: don't age it
   X.clearRect(0,0,200,220);
   const t=performance.now()/1000, bp=Math.abs(Math.sin(t*2.2));
   const mkt=(window.MarketMood?MarketMood.get():null);
@@ -295,7 +303,7 @@ document.getElementById('moodBadge').onclick=()=>{
 const OPNUM={feed:FEED,play:PLAY,clean:CLEAN,heal:HEAL};
 async function syncLedger(){ const l=await XamanBridge.now(); if(l){ liveLedger0=l; liveT0=performance.now(); refreshOps(); } }
 // feed/play are cooldown-gated (no-farming). Gray them out while on cooldown so no Xaman signature is wasted on a no-op.
-function opReady(op){ if(op!=='feed'&&op!=='play') return true; const last=op==='feed'?pet.last_feed:pet.last_play; return !last || (nowL()-last)>=COOLDOWN; }
+function opReady(op){ if(op!=='feed'&&op!=='play') return true; const n=nowL(); if(n==null) return false; const last=op==='feed'?pet.last_feed:pet.last_play; return !last || (n-last)>=COOLDOWN; }
 function refreshOps(){ document.querySelectorAll('[data-op]').forEach(b=>{ const op=b.dataset.op; if(op==='feed'||op==='play'){ const rdy=opReady(op); b.disabled=!rdy; b.style.opacity=rdy?'':'.4'; b.title=rdy?'':'on cooldown — feeding/playing again now is a no-op (no-farming rule)'; } }); }
 setInterval(refreshOps,1000);
 document.querySelectorAll('[data-op]').forEach(b=>b.onclick=async ()=>{
