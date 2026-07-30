@@ -335,12 +335,51 @@ document.querySelectorAll('[data-op]').forEach(b=>b.onclick=async ()=>{
       for(let i=0;i<8;i++){ await new Promise(r=>setTimeout(r,2500)); const live=petNid&&await XamanBridge.fetchPet(petNid); if(live)pet=live; }
       await syncLedger(); refreshOps(); return; }
   }
-  if(petNid){                                              // LIVE pet, no Xaman: show the exact tx any wallet can send
-    showPaymentSpec(op); return;                           // never simulate over a real pet — that would diverge from the ledger
+  if(petNid){                                              // LIVE pet: sign it for real, never simulate over on-ledger state
+    const j=await signRequest({kind:'interact', owner:OWNER, nid:petNid, op},
+      op+' your Ledgerling',
+      'Approve a 10-drop Payment in Xaman. The issuer reads it from the ledger and applies the open rules.');
+    if(j) watchSign(j.uuid, ()=>{ setTimeout(pullLive, 6000); toast(op+' signed 💖'); });
+    return;
   }
   pet=step(pet,OPNUM[op],nowLedger(),OWNER);               // LOCAL demo (no Xaman / standalone)
   if(JSON.stringify(pet)!==before){lastJoy=performance.now();toast(op+'! 💖');}
 });
+
+// Server-built Xaman sign requests. The browser SDK's authorize() hangs on desktop and mobile alike,
+// so payloads are created by the backend instead and the user is handed a link plus a QR. Nothing is
+// auto-opened: there is an await before we could call window.open, which is precisely what browsers
+// block. A link the user taps is always allowed.
+async function signRequest(body, title, note){
+  const bd=document.getElementById('lbody'), ov=document.getElementById('lov');
+  document.getElementById('ltitle').textContent=title;
+  bd.textContent='creating the sign request…';
+  ov.classList.add('on');
+  let j=null;
+  try{ j=await (await fetch(BK()+'/sign',{method:'POST',headers:{'content-type':'application/json'},
+       body:JSON.stringify(body)})).json(); }
+  catch(e){ j={error:String(e.message||e)}; }
+  if(!j||j.error||!j.next){ bd.textContent='could not create the sign request: '+((j&&j.error)||'unknown'); return null; }
+  bd.innerHTML=
+    `<div style="margin-bottom:10px">${note||''}</div>`+
+    `<a href="${j.next}" target="_blank" rel="noopener" style="display:block;padding:10px;border-radius:8px;`+
+    `background:#0b5;color:#022;font-weight:bold;text-align:center;text-decoration:none">Open in Xaman</a>`+
+    (j.qr?`<div style="text-align:center;margin-top:10px"><img src="${j.qr}" alt="Xaman QR" style="width:190px;max-width:100%;border-radius:8px"><div style="opacity:.6;font-size:11px;margin-top:5px">or scan with Xaman</div></div>`:'')+
+    `<div id="sgStat" style="margin-top:10px;opacity:.8;font-size:12px">waiting for you to approve…</div>`;
+  return j;
+}
+// Poll until Xaman reports the payload signed, cancelled or expired.
+function watchSign(uuid, onSigned){
+  let tries=0;
+  const t=setInterval(async ()=>{
+    if(++tries>60){ clearInterval(t); return; }
+    let r=null; try{ r=await (await fetch(BK()+'/sign/'+uuid)).json(); }catch{ return; }
+    const st=document.getElementById('sgStat');
+    if(r.signed){ clearInterval(t); if(st) st.textContent='signed ✓'; onSigned&&onSigned(r.txid); }
+    else if(r.cancelled){ clearInterval(t); if(st) st.textContent='cancelled'; }
+    else if(r.expired){ clearInterval(t); if(st) st.textContent='expired'; }
+  },3000);
+}
 
 // ── NPC ladder ───────────────────────────────────────────────────────────────────────────────────
 // Only offered for a LIVE pet: a demo pet has no on-ledger history to fight from.
@@ -373,40 +412,18 @@ async function refreshRank(){
   }catch{ /* rank is cosmetic */ }
 }
 async function challengeRung(rung,name){
-  const msg=document.getElementById('lMsg');
-  msg.textContent='building the challenge…';
-  let j=null;
-  try{ j=await (await fetch(BK()+'/battle/ladder',{method:'POST',headers:{'content-type':'application/json'},
-        body:JSON.stringify({owner:OWNER,aNid:petNid,rung})})).json(); }
-  catch(e){ j={error:String(e.message||e)}; }
-  if(!j||j.error){ msg.textContent='could not challenge: '+((j&&j.error)||'unknown'); return; }
-  msg.textContent='';
-
-  // The challenge is a 1-drop Payment the PLAYER signs. Signed in Xaman when available; otherwise the
-  // exact transaction is shown, because it is an ordinary Payment any wallet can send.
-  if(xamanReady && XamanBridge.ready){
-    msg.textContent='approve the challenge in Xaman…';
-    const r=await XamanBridge.signLadder(j.unsignedTx, name);
-    if(!r||!r.signed){ msg.textContent='challenge cancelled'; return; }
-    msg.textContent=`challenge sent. The fight settles once ledger ${j.pinnedLedger} closes, roughly a minute. Result appears here.`;
-    watchBattle(r.txid);
-    return;
-  }
-  const tx=j.unsignedTx||{};
-  const memo=((tx.Memos||[])[0]||{}).Memo||{};
-  document.getElementById('ltitle').textContent='Challenge '+name;
-  document.getElementById('lbody').textContent=
-    `Send this from any XRPL wallet to enter the fight. It is free apart from the network fee.\n\n`+
-    `Destination : ${tx.Destination}\n`+
-    `Amount      : ${tx.Amount} drop\n`+
-    `MemoType    : ${memo.MemoType||''}\n`+
-    `MemoData    : ${memo.MemoData||''}\n`+
-    (tx.SourceTag!=null?`SourceTag   : ${tx.SourceTag}\n`:'')+
-    `\nThe dice are the hash of ledger ${j.pinnedLedger}, which has not closed yet, so the outcome `+
-    `cannot be known or influenced by anyone right now. Once it closes the issuer settles the fight `+
-    `and you can re-derive the result yourself.`;
-  document.getElementById('lov').classList.add('on');   // not open(): that name shadows window.open
+  const j=await signRequest(
+    {kind:'ladder', owner:OWNER, nid:petNid, rung},
+    'Challenge '+name,
+    `Approve a 1-drop challenge in Xaman. The dice are the hash of a ledger that has not closed yet, `+
+    `so nobody can know or rig the result. Settlement is automatic, and you can re-derive it yourself.`);
+  if(!j) return;
+  watchSign(j.uuid, txid=>{
+    document.getElementById('lMsg').textContent='challenge signed. Settling once the pinned ledger closes, about a minute.';
+    watchBattle(txid);
+  });
 }
+
 // Poll for the result memo the issuer writes once the pinned ledger closes.
 function watchBattle(battleId){
   if(!battleId) return;

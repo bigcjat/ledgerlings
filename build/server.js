@@ -588,6 +588,75 @@ app.get('/verify-battle/:battleId', async (req, res) => {
 });
 
 // ladder: the PUBLISHED house-NPC roster (opponents are public + fixed → provably fair). Auditable.
+// ── server-side sign requests ────────────────────────────────────────────────────────────────────
+// The browser SDK's authorize() hangs on both desktop and mobile: no popup, no error, no rejection.
+// The app registration is fine (opening the OAuth URL by hand renders a real Xaman sign request), so
+// rather than keep fighting the client flow, payloads are created here with the server credentials.
+// This is the ordinary Xaman server integration and it needs no sign-in at all: the player supplies
+// an address, we build the transaction, Xaman shows it to them, they approve.
+//
+// DELIBERATELY NOT A GENERIC SIGNING PROXY. It only ever builds the two transactions this game
+// defines, from validated inputs. An endpoint that signed arbitrary txjson would let anyone create
+// payloads under this app's identity and show users transactions we did not author.
+app.post('/sign', async (req, res) => {
+  if (!sdk) return res.status(503).json({ error: 'signing not configured (set XAMAN_API_KEY and XAMAN_API_SECRET)' });
+  const { kind, owner, nid, op, rung } = req.body || {};
+  if (!xrpl.isValidClassicAddress(owner || '')) return res.status(400).json({ error: 'valid owner address required' });
+
+  try {
+    let txjson, instruction;
+
+    if (kind === 'interact') {
+      if (!R.OP[op]) return res.status(400).json({ error: 'unknown op' });
+      if (!nid) return res.status(400).json({ error: 'nid required' });
+      txjson = { TransactionType: 'Payment', Account: owner, Destination: ISSUER_ADDRESS || undefined,
+        Amount: '10', Memos: [{ Memo: { MemoType: hex('ledgerlings/op'), MemoData: hex(`${op}|${nid}`) } }] };
+      instruction = `Ledgerlings: ${op} your pet`;
+
+    } else if (kind === 'ladder') {
+      if (!LADDER[rung]) return res.status(400).json({ error: 'invalid rung (see GET /ladder)' });
+      if (!nid) return res.status(400).json({ error: 'nid required' });
+      const built = await withClient(async (c, w) => {
+        const ps = await readState(c, w.classicAddress, nid);
+        if (!ps) return { error: 'pet not found' };
+        if (ps.owner !== owner) return { error: 'you do not own this pet' };
+        if (ps.alive === 0) return { error: 'a passed pet cannot battle' };
+        const cur = (await c.request({ command: 'ledger', ledger_index: 'validated' })).result.ledger_index;
+        const N = cur + BATTLE_LEDGER_MARGIN;
+        return { N, tx: { TransactionType: 'Payment', Account: owner, Destination: w.classicAddress, Amount: '1',
+          Memos: [{ Memo: { MemoType: hex(BATTLE_MEMO), MemoData: hex(['ladder', nid, String(rung), String(N)].join('|')) } }] } };
+      });
+      if (built.error) return res.status(400).json(built);
+      txjson = built.tx;
+      instruction = `Ledgerlings: challenge ${LADDER[rung].name}`;
+      res.locals = { pinnedLedger: built.N };
+
+    } else {
+      return res.status(400).json({ error: "kind must be 'interact' or 'ladder'" });
+    }
+
+    const payload = await sdk.payload.create({ txjson: tag(txjson), custom_meta: { instruction } });
+    if (!payload) return res.status(502).json({ error: 'Xaman did not return a payload' });
+    res.json({
+      uuid: payload.uuid,
+      next: payload.next && payload.next.always,     // open this: Xaman deep link on mobile, QR on desktop
+      qr: payload.refs && payload.refs.qr_png,
+      pinnedLedger: (res.locals && res.locals.pinnedLedger) || undefined,
+    });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Poll a sign request. Returns signed:true plus the txid once the user approves in Xaman.
+app.get('/sign/:uuid', async (req, res) => {
+  if (!sdk) return res.status(503).json({ error: 'signing not configured' });
+  try {
+    const pl = await sdk.payload.get(req.params.uuid);
+    if (!pl) return res.status(404).json({ error: 'not found' });
+    res.json({ signed: !!(pl.meta && pl.meta.signed), cancelled: !!(pl.meta && pl.meta.cancelled),
+      expired: !!(pl.meta && pl.meta.expired), txid: pl.response && pl.response.txid });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 app.get('/ladder', (req, res) => {
   res.json({ rulesetVersion: RULESET_VERSION, rungs: LADDER.map((n, i) => ({ rung: i, id: n.id, name: n.name, stats: n.stats, power: BR.power(n.stats) })) });
 });
