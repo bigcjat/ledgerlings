@@ -405,7 +405,7 @@ async function challengeRung(rung,name){
     `\nThe dice are the hash of ledger ${j.pinnedLedger}, which has not closed yet, so the outcome `+
     `cannot be known or influenced by anyone right now. Once it closes the issuer settles the fight `+
     `and you can re-derive the result yourself.`;
-  open('lov');
+  document.getElementById('lov').classList.add('on');   // not open(): that name shadows window.open
 }
 // Poll for the result memo the issuer writes once the pinned ledger closes.
 function watchBattle(battleId){
@@ -447,7 +447,7 @@ function showPaymentSpec(op){
     `replayed from that transaction. Nothing here is applied locally.`;
   document.getElementById('ptitle').textContent=op+' — send this transaction';
   body.textContent=spec;
-  open('pov');                                          // same overlay mechanism as Verify
+  document.getElementById('pov').classList.add('on');   // not open(): that name shadows window.open
 }
 
 // ── mode banner + share wiring, shared by both paths ──
