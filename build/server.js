@@ -100,10 +100,18 @@ const dec = h => {
   return s;
 };
 
+// xrpl.Wallet.fromSeed() defaults to ed25519 and, given a secp256k1 family seed, SILENTLY derives a
+// different account rather than erroring. Xaman "secret numbers" accounts are secp256k1, so a seed
+// exported from Xaman would produce the wrong keypair here and every signature would fail auth with
+// nothing in the logs pointing at why. Encoded ed25519 seeds start with "sEd"; everything else is
+// secp256k1, so the prefix decides it.
+const walletFromSeed = seed =>
+  xrpl.Wallet.fromSeed(seed, { algorithm: seed.startsWith('sEd') ? 'ed25519' : 'ecdsa-secp256k1' });
+
 async function withClient(fn) {
   const c = new xrpl.Client(ENDPOINT); await c.connect();
   try {
-    const w = xrpl.Wallet.fromSeed(ISSUER_SEED);
+    const w = walletFromSeed(ISSUER_SEED);
     // RegularKey: sign with w's keypair but ACT AS the issuer — override the address so tx.Account and
     // every account lookup target the issuer; the signature stays the RegularKey's (valid per SetRegularKey).
     if (ISSUER_ADDRESS) w.classicAddress = ISSUER_ADDRESS;
@@ -841,7 +849,7 @@ async function pollerTick(c, w) {
 async function startPoller() {
   if (!ISSUER_SEED) { console.warn('[poller] disabled — no LEDGERLINGS_ISSUER_SEED'); return; }
   const c = new xrpl.Client(ENDPOINT); await c.connect();
-  const w = xrpl.Wallet.fromSeed(ISSUER_SEED); if (ISSUER_ADDRESS) w.classicAddress = ISSUER_ADDRESS;
+  const w = walletFromSeed(ISSUER_SEED); if (ISSUER_ADDRESS) w.classicAddress = ISSUER_ADDRESS;
   // catch up every existing pet once, then only react to new interactions.
   const pets = (await allIssuerNfts(c, w.classicAddress)).filter(n => n.NFTokenTaxon === TAXON);
   for (const n of pets) { try { await reconcilePet(c, w, n.NFTokenID); } catch (e) { console.warn('[poller] init', e.message); } }

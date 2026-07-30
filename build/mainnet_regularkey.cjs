@@ -27,6 +27,33 @@ const NETWORK = 'wss://xrplcluster.com';           // MAINNET
 const ISSUER = 'rDe4tWiu8hVNQEySmfzms47M6qt4JSWf6L';
 const REGULAR_KEY = 'r3cTNtQA4DuDPtvnbNFjVmafBURv1A2c5f';
 
+// xrpl.Wallet.fromSeed() defaults to ed25519 and, given a secp256k1 family seed, silently derives a
+// DIFFERENT account instead of erroring. Xaman secret-number accounts are secp256k1. Encoded
+// ed25519 seeds start with "sEd"; everything else is secp256k1.
+const walletFromSeed = seed =>
+  xrpl.Wallet.fromSeed(seed, { algorithm: seed.startsWith('sEd') ? 'ed25519' : 'ecdsa-secp256k1' });
+
+/**
+ * Accept either a family seed or Xaman secret numbers.
+ * Xaman shows 8 groups of 6 digits labelled A-H. Paste them separated by spaces, commas or
+ * newlines; the letters are ignored if present. Converted locally, in memory, never stored.
+ */
+function walletFromInput(raw) {
+  const digitGroups = raw.replace(/[A-Ha-h]\s*[:.]?/g, ' ').match(/\d{6}/g) || [];
+  if (digitGroups.length === 8) {
+    const { Account } = require('xrpl-secret-numbers');   // devDependency, local tooling only
+    return { wallet: walletFromSeed(new Account(digitGroups).getFamilySeed()), kind: 'Xaman secret numbers' };
+  }
+  if (digitGroups.length > 0 && digitGroups.length !== 8) {
+    throw new Error(`found ${digitGroups.length} groups of 6 digits; Xaman secret numbers need exactly 8`);
+  }
+  const seed = raw.replace(/\s+/g, '');
+  if (!/^s[1-9A-HJ-NP-Za-km-z]{28,30}$/.test(seed)) {
+    throw new Error('not recognisable as a family seed (s...) or as 8 groups of 6 digits');
+  }
+  return { wallet: walletFromSeed(seed), kind: `family seed (${seed.startsWith('sEd') ? 'ed25519' : 'secp256k1'})` };
+}
+
 const b = s => `\x1b[1m${s}\x1b[0m`;
 const red = s => `\x1b[31m${s}\x1b[0m`;
 const grn = s => `\x1b[32m${s}\x1b[0m`;
@@ -126,8 +153,9 @@ async function submit(client, wallet, tx, label) {
       console.log(`\n  This sets RegularKey = ${b(REGULAR_KEY)}`);
       console.log('  It is reversible: the master key can change or remove it at any time.');
 
-      const seed = await prompt('\n  MASTER seed for the issuer (hidden): ', true);
-      const wallet = xrpl.Wallet.fromSeed(seed);
+      const raw = await prompt('\n  MASTER seed, or Xaman secret numbers (hidden): ', true);
+      const { wallet, kind } = walletFromInput(raw);
+      console.log(`  input read as  ${kind}`);
       if (wallet.classicAddress !== ISSUER) {
         console.log(red(`\n  WRONG SEED. That seed is for ${wallet.classicAddress}, not the issuer.`));
         console.log('  Nothing was submitted.');
@@ -158,8 +186,9 @@ async function submit(client, wallet, tx, label) {
       console.log('\n  This submits a no-op AccountSet on the issuer, signed by the REGULARKEY seed.');
       console.log('  It proves the RegularKey can sign for the issuer. Costs one transaction fee.');
 
-      const seed = await prompt('\n  REGULARKEY seed (hidden): ', true);
-      const wallet = xrpl.Wallet.fromSeed(seed);
+      const raw = await prompt('\n  REGULARKEY seed, or Xaman secret numbers (hidden): ', true);
+      const { wallet, kind } = walletFromInput(raw);
+      console.log(`  input read as  ${kind}`);
       if (wallet.classicAddress !== REGULAR_KEY) {
         console.log(red(`\n  WRONG SEED. That seed is for ${wallet.classicAddress}, not ${REGULAR_KEY}.`));
         if (wallet.classicAddress === ISSUER) {
