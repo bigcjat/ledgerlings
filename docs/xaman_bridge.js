@@ -135,6 +135,41 @@ const XamanBridge = (() => {
     });
   }
 
+  /* Sign a server-built transaction as-is. Used for the ladder challenge, where the backend returns
+   * an unsignedTx whose memo pins the future ledger that seeds the fight. The txjson is passed
+   * through untouched: altering it here would change the battle the player thinks they are entering. */
+  async function signLadder(txjson, label) {
+    if (!ready || !xumm || !txjson) return { local: true };
+    const P = await payloadApi();
+    const request = { txjson, custom_meta: { identifier: 'ledgerlings-ladder', instruction: `Ledgerlings: challenge ${label || 'the ladder'}` } };
+    if (!isXapp) {
+      const sub = await P.createAndSubscribe(request, (ev) => {
+        if (Object.keys(ev.data).indexOf('signed') > -1) return ev.data;
+      });
+      const url = sub && sub.created && sub.created.next && sub.created.next.always;
+      if (url) window.open(url, '_blank', 'noopener');
+      const res = await sub.resolved;
+      const signed = !!(res && res.signed);
+      let txid = null;
+      if (signed) { try { const full = await P.get(sub.created.uuid); txid = full && full.response && full.response.txid; } catch { /* best effort */ } }
+      return { signed, txid };                      // txid IS the battleId
+    }
+    const payload = await P.create(request);
+    xumm.xapp.openSignRequest(payload);
+    return await new Promise((res) => {
+      const onResult = async (data) => {
+        if (!data || !data.uuid) return;
+        if (payload.uuid && data.uuid !== payload.uuid) return;
+        xumm.xapp.off && xumm.xapp.off('payload', onResult);
+        const signed = data.reason === 'SIGNED';
+        let txid = null;
+        if (signed) { try { const full = await (await payloadApi()).get(data.uuid); txid = full && full.response && full.response.txid; } catch { /* best effort */ } }
+        res({ signed, txid });
+      };
+      xumm.xapp.on('payload', onResult);
+    });
+  }
+
   /* Authoritative pet state from the issuer backend (after a signed interaction it has run the rules
    * + NFTokenModify). Falls back to null so the caller keeps its optimistic local state. */
   async function fetchPet(nid) {
@@ -159,7 +194,7 @@ const XamanBridge = (() => {
     try { const j = await (await fetch(`${BACKEND}/now`)).json(); return Number.isInteger(j && j.ledger) ? j.ledger : null; } catch { return null; }
   }
 
-  return { init, signIn, signOut, canSignIn, interact, fetchPet, adopt, verify, now,
+  return { init, signIn, signOut, canSignIn, interact, signLadder, fetchPet, adopt, verify, now,
     get account() { return account; }, get ready() { return ready; }, get isXapp() { return isXapp; },
     get sourceTag() { return sourceTag; } };
 })();

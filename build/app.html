@@ -86,6 +86,16 @@
        silently, which meant a visitor could play a whole session believing it was real. -->
   <div id="mode" style="margin-top:9px;font-size:12px;opacity:.8"></div>
 
+  <!-- NPC ladder. Solo-playable, so it needs no second player, and it is the clearest demonstration
+       of the fairness claim: the seed is the hash of a ledger that does not exist yet at challenge
+       time, and the opponent's stats are published up front. -->
+  <div id="ladderBox" style="display:none;margin-top:10px;padding:11px;border:1px solid var(--glow);border-radius:10px;background:#0e3a4a;text-align:left">
+    <div style="color:var(--hot);margin-bottom:6px">⚔️ Ladder — fight a published opponent</div>
+    <div style="opacity:.72;font-size:12px;margin-bottom:8px">Their stats are public before you fight. The dice are the hash of a ledger that has not closed yet, so nobody can know or rig the result. Free, and you can re-check it afterwards.</div>
+    <div id="rungs" style="display:grid;gap:6px"></div>
+    <div id="lMsg" style="margin-top:7px;font-size:12px;opacity:.85"></div>
+  </div>
+
   <div id="verify">🔎 Verify my pet — prove the game played fair</div>
   <div id="share" style="margin-top:8px;padding:9px;border:1px solid var(--glow);border-radius:10px;background:#0e3a4a;color:var(--hot);cursor:pointer;display:none">🔗 Share my Ledgerling</div>
   <div id="foot">on XRPL · pet = a Dynamic NFT · every rule is open &amp; re-checkable</div>
@@ -110,6 +120,12 @@
   <div class="x" data-close="mov">✕</div>
   <div style="font-size:16px;font-weight:700;color:var(--hot)">Verify the mood</div>
   <div class="vline" id="mbody"></div>
+</div>
+
+<div class="overlay" id="lov">
+  <div class="x" data-close="lov">✕</div>
+  <div style="font-size:16px;font-weight:700;color:var(--hot)" id="ltitle">Ladder</div>
+  <div class="vline" id="lbody" style="white-space:pre-wrap;word-break:break-all;font-size:12px"></div>
 </div>
 
 <!-- Keyless play. An interaction is an ordinary Payment with a memo, so any wallet can drive a
@@ -326,6 +342,91 @@ document.querySelectorAll('[data-op]').forEach(b=>b.onclick=async ()=>{
   if(JSON.stringify(pet)!==before){lastJoy=performance.now();toast(op+'! 💖');}
 });
 
+// ── NPC ladder ───────────────────────────────────────────────────────────────────────────────────
+// Only offered for a LIVE pet: a demo pet has no on-ledger history to fight from.
+let LADDER=[];
+async function loadLadder(){
+  if(!BK()||!petNid) return;
+  try{ const j=await (await fetch(BK()+'/ladder')).json(); LADDER=j.rungs||j||[]; }catch{ return; }
+  if(!LADDER.length) return;
+  const box=document.getElementById('ladderBox'), list=document.getElementById('rungs');
+  list.innerHTML='';
+  LADDER.forEach((r,i)=>{
+    const st=r.stats||{};
+    const b=document.createElement('button');
+    b.style.cssText='padding:8px;border-radius:8px;border:1px solid var(--glow);background:#12586b;color:#dff;font:inherit;font-size:12px;cursor:pointer;text-align:left';
+    b.innerHTML=`<b style="color:var(--hot)">${r.name}</b> <span style="opacity:.6">rung ${r.rung!=null?r.rung:i}</span><br>`+
+      `<span style="opacity:.7;font-size:11px">stage ${st.stage!=null?st.stage:'?'} · care ${st.care!=null?st.care:'?'} · health ${st.health!=null?st.health:'?'}`+
+      (r.power!=null?` · power ${r.power}`:'')+`</span>`;
+    b.onclick=()=>challengeRung(r.rung!=null?r.rung:i, r.name);
+    list.appendChild(b);
+  });
+  box.style.display='block';
+  refreshRank();
+}
+async function refreshRank(){
+  if(!BK()||!petNid) return;
+  try{
+    const j=await (await fetch(BK()+'/ladder-rank/'+petNid)).json();
+    if(j && (j.wins!=null))
+      document.getElementById('lMsg').textContent=`your record: ${j.wins} win(s) · streak ${j.streak||0} · best rung ${j.highestRung!=null?j.highestRung:'-'}`;
+  }catch{ /* rank is cosmetic */ }
+}
+async function challengeRung(rung,name){
+  const msg=document.getElementById('lMsg');
+  msg.textContent='building the challenge…';
+  let j=null;
+  try{ j=await (await fetch(BK()+'/battle/ladder',{method:'POST',headers:{'content-type':'application/json'},
+        body:JSON.stringify({owner:OWNER,aNid:petNid,rung})})).json(); }
+  catch(e){ j={error:String(e.message||e)}; }
+  if(!j||j.error){ msg.textContent='could not challenge: '+((j&&j.error)||'unknown'); return; }
+  msg.textContent='';
+
+  // The challenge is a 1-drop Payment the PLAYER signs. Signed in Xaman when available; otherwise the
+  // exact transaction is shown, because it is an ordinary Payment any wallet can send.
+  if(xamanReady && XamanBridge.ready){
+    msg.textContent='approve the challenge in Xaman…';
+    const r=await XamanBridge.signLadder(j.unsignedTx, name);
+    if(!r||!r.signed){ msg.textContent='challenge cancelled'; return; }
+    msg.textContent=`challenge sent. The fight settles once ledger ${j.pinnedLedger} closes, roughly a minute. Result appears here.`;
+    watchBattle(r.txid);
+    return;
+  }
+  const tx=j.unsignedTx||{};
+  const memo=((tx.Memos||[])[0]||{}).Memo||{};
+  document.getElementById('ltitle').textContent='Challenge '+name;
+  document.getElementById('lbody').textContent=
+    `Send this from any XRPL wallet to enter the fight. It is free apart from the network fee.\n\n`+
+    `Destination : ${tx.Destination}\n`+
+    `Amount      : ${tx.Amount} drop\n`+
+    `MemoType    : ${memo.MemoType||''}\n`+
+    `MemoData    : ${memo.MemoData||''}\n`+
+    (tx.SourceTag!=null?`SourceTag   : ${tx.SourceTag}\n`:'')+
+    `\nThe dice are the hash of ledger ${j.pinnedLedger}, which has not closed yet, so the outcome `+
+    `cannot be known or influenced by anyone right now. Once it closes the issuer settles the fight `+
+    `and you can re-derive the result yourself.`;
+  open('lov');
+}
+// Poll for the result memo the issuer writes once the pinned ledger closes.
+function watchBattle(battleId){
+  if(!battleId) return;
+  const msg=document.getElementById('lMsg');
+  let tries=0;
+  const t=setInterval(async ()=>{
+    if(++tries>40){ clearInterval(t); return; }
+    try{
+      const b=await (await fetch(BK()+'/battle/'+battleId)).json();
+      if(b && b.result){
+        clearInterval(t);
+        const won=b.result.winnerNid===petNid;
+        msg.textContent=won?'you won that one 🏆':(b.result.winnerNid==='DRAW'?'a draw':'you lost that one');
+        toast(won?'ladder win 🏆':'ladder result in');
+        refreshRank(); pullLive();
+      }
+    }catch{ /* keep waiting */ }
+  },6000);
+}
+
 // A Ledgerlings interaction is an ordinary Payment. The issuer's poller reads it out of ledger
 // history (server.js parses MemoType "ledgerlings/op"), applies the open rules and NFTokenModifies
 // the pet, so ANY wallet can play — Xaman just makes it one tap. Showing the raw spec keeps a
@@ -380,7 +481,7 @@ async function keylessAdopt(addr){
   document.getElementById('keyless').style.display='none';
   await syncLedger(); setInterval(syncLedger,30000);
   setInterval(pullLive,15000);
-  showShare(); setMode(); refreshOps();
+  showShare(); setMode(); refreshOps(); loadLadder();
   toast('adopted on mainnet 🎉');
 }
 
@@ -392,7 +493,7 @@ async function keylessAdopt(addr){
     if(a&&a.nid){ petNid=a.nid; if(a.state) pet=a.state; }
     toast('connected: '+OWNER.slice(0,8)+'…');
     await syncLedger(); setInterval(syncLedger,30000);     // real ledger for cooldown gray-out
-    showShare();
+    showShare(); loadLadder();
   } else if(BK()){
     document.getElementById('keyless').style.display='block';
     document.getElementById('kGo').onclick=()=>keylessAdopt(document.getElementById('kAddr').value.trim());

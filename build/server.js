@@ -830,6 +830,65 @@ async function reconcilePet(c, w, nid) {
   return { nid, updated: true, state: derived };
 }
 let pollerLastLedger = 0;
+// ── ladder auto-resolution ───────────────────────────────────────────────────────────────────────
+// A ladder challenge is a player-signed Payment carrying "ladder|aNid|rung|N". The fight can only be
+// settled once ledger N is validated, because N's hash is the unriggable seed. Nothing resolved them
+// before: /battle/resolve is requireAdmin, and the poller ignored battle memos, so a player could
+// start a fight that no one could finish. resolveBattleTx is idempotent (it returns ALREADY_RESOLVED
+// when a result memo exists), so calling it from the poller cannot double-settle or double-pay.
+const pendingLadder = new Map();                       // battleId (tx hash) -> pinned ledger N
+
+function noteLadderChallenge(tx, hash) {
+  if (!hash) return;
+  for (const mm of (tx.Memos || [])) {
+    const md = mm.Memo || {};
+    try {
+      if (unhex(md.MemoType || '') !== BATTLE_MEMO) continue;
+      const f = unhex(md.MemoData || '').split('|');
+      if (f[0] !== 'ladder') continue;
+      const N = Number(f[3]);
+      if (Number.isInteger(N)) pendingLadder.set(hash, N);
+    } catch { /* skip malformed memo */ }
+  }
+}
+
+async function resolvePendingLadders(c, w) {
+  if (!pendingLadder.size) return 0;
+  const cur = (await c.request({ command: 'ledger', ledger_index: 'validated' })).result.ledger_index;
+  let done = 0;
+  for (const [battleId, N] of [...pendingLadder]) {
+    if (cur < N) continue;                             // seed ledger not validated yet
+    try {
+      const r = await resolveBattleTx(c, w, battleId);
+      // Keep retrying only the genuinely transient case; drop everything else so a permanently
+      // broken challenge cannot be retried every six seconds forever.
+      if (r && r.error === 'pinned ledger not validated yet') continue;
+      pendingLadder.delete(battleId);
+      done++;
+      console.log(`[poller] ladder ${battleId.slice(0, 8)} -> ${r && (r.status || r.winnerNid || 'resolved')}`);
+    } catch (e) { console.warn('[poller] ladder', battleId.slice(0, 8), e.message); }
+  }
+  return done;
+}
+
+// Pick up challenges signed while this process was not running, so a restart does not strand a fight.
+async function scanOpenLadders(c, issuer, backLedgers = 8000) {
+  const cur = (await c.request({ command: 'ledger', ledger_index: 'validated' })).result.ledger_index;
+  let marker, seen = 0;
+  do {
+    const r = await c.request({ command: 'account_tx', account: issuer,
+      ledger_index_min: Math.max(0, cur - backLedgers), ledger_index_max: -1, forward: true, limit: 200, marker });
+    for (const t of r.result.transactions) {
+      const tx = t.tx || t.tx_json || {};
+      if (tx.TransactionType !== 'Payment' || tx.Destination !== issuer) continue;
+      noteLadderChallenge(tx, t.hash || tx.hash);
+    }
+    seen += r.result.transactions.length;
+    marker = r.result.marker;
+  } while (marker);
+  return pendingLadder.size;
+}
+
 async function pollerTick(c, w) {
   const issuer = w.classicAddress; const affected = new Set(); let marker;
   do {
@@ -838,12 +897,14 @@ async function pollerTick(c, w) {
       const tx = t.tx || t.tx_json || {}; const lseq = tx.ledger_index || t.ledger_index;
       if (lseq && lseq > pollerLastLedger) pollerLastLedger = lseq;
       if (tx.TransactionType === 'Payment' && tx.Destination === issuer) {
+        noteLadderChallenge(tx, t.hash || tx.hash);
         for (const mm of (tx.Memos || [])) { const md = mm.Memo || {}; try { if (unhex(md.MemoType || '') === 'ledgerlings/op') { const p = unhex(md.MemoData || '').split('|'); if (p[1]) affected.add(p[1]); } } catch { /* skip */ } }
       }
     }
     marker = r.result.marker;
   } while (marker);
   for (const nid of affected) { try { await reconcilePet(c, w, nid); } catch (e) { console.warn('[poller] reconcile', nid.slice(0, 8), e.message); } }
+  try { await resolvePendingLadders(c, w); } catch (e) { console.warn('[poller] ladders', e.message); }
   return affected.size;
 }
 async function startPoller() {
@@ -854,7 +915,10 @@ async function startPoller() {
   const pets = (await allIssuerNfts(c, w.classicAddress)).filter(n => n.NFTokenTaxon === TAXON);
   for (const n of pets) { try { await reconcilePet(c, w, n.NFTokenID); } catch (e) { console.warn('[poller] init', e.message); } }
   pollerLastLedger = (await c.request({ command: 'ledger', ledger_index: 'validated' })).result.ledger_index;
-  console.log(`[poller] watching ${w.classicAddress}; caught up ${pets.length} pet(s); tracking from ledger ${pollerLastLedger}`);
+  let openLadders = 0;
+  try { openLadders = await scanOpenLadders(c, w.classicAddress); } catch (e) { console.warn('[poller] ladder scan', e.message); }
+  console.log(`[poller] watching ${w.classicAddress}; caught up ${pets.length} pet(s); ${openLadders} open ladder challenge(s); tracking from ledger ${pollerLastLedger}`);
+  try { await resolvePendingLadders(c, w); } catch (e) { console.warn('[poller] ladders', e.message); }
   const loop = async () => {
     try { if (!c.isConnected()) await c.connect(); await pollerTick(c, w); }
     catch (e) { console.warn('[poller] tick', e.message); }
