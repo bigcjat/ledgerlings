@@ -418,7 +418,10 @@ async function resolveLadder(c, w, battleId, b) {
   const claimedN = b.challenge.N;
   if (!lseq) return { error: 'challenge ledger unknown', battleId };
   const N = lseq + BATTLE_LEDGER_MARGIN;
-  const staleCommitment = Number.isInteger(claimedN) && claimedN <= lseq;
+  // Older challenges wrote an absolute ledger index here; new ones write the margin. Only an
+  // absolute-looking value that predates the landing ledger indicates a commitment that was
+  // already knowable when signed.
+  const staleCommitment = Number.isInteger(claimedN) && claimedN > 1000000 && claimedN <= lseq;
 
   const lh = await ledgerHashOf(c, N);
   if (!lh) return { error: 'pinned ledger not validated yet', N };
@@ -509,7 +512,7 @@ async function verifyBattle(c, issuer, battleId) {
     // only property that makes this fair. A verifier that cannot fail on that is not a verifier.
     const claimedN = b.challenge.N;
     const N = (lseq || 0) + BATTLE_LEDGER_MARGIN;
-    const staleCommitment = Number.isInteger(claimedN) && lseq && claimedN <= lseq;
+    const staleCommitment = Number.isInteger(claimedN) && claimedN > 1000000 && lseq && claimedN <= lseq;
     const lh = await ledgerHashOf(c, N); if (!lh) return { ok: false, verdict: 'ERROR', reason: 'pinned ledger not available' };
     const npcId = 'NPC:' + npc.id, seed = seedFor(lh, battleId, aNid, npcId);
     const h = await loadHistory(c, issuer, aNid), sA = stateAtLedger(h.genesis, h.interactions, N);
@@ -660,7 +663,10 @@ app.post('/sign', async (req, res) => {
         const cur = (await c.request({ command: 'ledger', ledger_index: 'validated' })).result.ledger_index;
         const N = cur + BATTLE_LEDGER_MARGIN;
         return { N, tx: { TransactionType: 'Payment', Account: owner, Destination: w.classicAddress, Amount: '1',
-          Memos: [{ Memo: { MemoType: hex(BATTLE_MEMO), MemoData: hex(['ladder', nid, String(rung), String(N)].join('|')) } }] } };
+          // 4th field is the MARGIN, not an absolute ledger. The seed ledger is derived at resolution
+          // from the ledger this challenge lands in, so pinning an absolute one here would be both
+          // meaningless and always stale by the time a human finishes approving.
+          Memos: [{ Memo: { MemoType: hex(BATTLE_MEMO), MemoData: hex(['ladder', nid, String(rung), String(BATTLE_LEDGER_MARGIN)].join('|')) } }] } };
       });
       if (built.error) return res.status(400).json(built);
       txjson = built.tx;
