@@ -67,6 +67,23 @@
     <button class="btn" data-op="heal">💊<small>heal</small></button>
     <button class="btn" id="danceBtn">💃<small>dance</small></button>
   </div>
+  <!-- Keyless mainnet adopt. Shown only when there is no Xaman xApp context (no XAMAN_API_KEY, or
+       opened as a plain web page) AND a backend is configured. POST /adopt is public, so anyone
+       with an XRPL address gets a real source-tagged mainnet mint without installing anything.
+       The xApp path takes precedence whenever it is available; this never competes with it. -->
+  <div id="keyless" style="display:none;margin-top:10px;padding:11px;border:1px solid var(--glow);border-radius:10px;background:#0e3a4a;text-align:left">
+    <div style="color:var(--hot);margin-bottom:7px">🐣 Adopt a real one on XRPL mainnet</div>
+    <div style="opacity:.75;font-size:12px;margin-bottom:8px">Paste any XRPL address. We mint your Ledgerling on mainnet, you own the record, and you can verify it yourself. No wallet connection, nothing to install, no fee to you.</div>
+    <input id="kAddr" placeholder="r..." autocomplete="off" spellcheck="false"
+      style="width:100%;box-sizing:border-box;padding:8px;border-radius:8px;border:1px solid var(--glow);background:#062430;color:#cfefff;font:inherit;font-size:13px">
+    <button id="kGo" style="margin-top:8px;width:100%;padding:9px;border-radius:8px;border:1px solid var(--glow);background:#0b5;color:#022;font:inherit;font-weight:bold;cursor:pointer">Adopt on mainnet</button>
+    <div id="kMsg" style="margin-top:7px;font-size:12px;opacity:.85"></div>
+  </div>
+
+  <!-- Says plainly whether what you are looking at is on a ledger. The page used to simulate
+       silently, which meant a visitor could play a whole session believing it was real. -->
+  <div id="mode" style="margin-top:9px;font-size:12px;opacity:.8"></div>
+
   <div id="verify">🔎 Verify my pet — prove the game played fair</div>
   <div id="share" style="margin-top:8px;padding:9px;border:1px solid var(--glow);border-radius:10px;background:#0e3a4a;color:var(--hot);cursor:pointer;display:none">🔗 Share my Ledgerling</div>
   <div id="foot">on XRPL · pet = a Dynamic NFT · every rule is open &amp; re-checkable</div>
@@ -91,6 +108,15 @@
   <div class="x" data-close="mov">✕</div>
   <div style="font-size:16px;font-weight:700;color:var(--hot)">Verify the mood</div>
   <div class="vline" id="mbody"></div>
+</div>
+
+<!-- Keyless play. An interaction is an ordinary Payment with a memo, so any wallet can drive a
+     LIVE pet. Shown instead of simulating, because simulating over a real pet would drift from
+     the ledger and make Verify fail for reasons the player did not cause. -->
+<div class="overlay" id="pov">
+  <div class="x" data-close="pov">✕</div>
+  <div style="font-size:16px;font-weight:700;color:var(--hot)" id="ptitle">Send this transaction</div>
+  <div class="vline" id="pbody" style="white-space:pre-wrap;word-break:break-all;font-size:12px"></div>
 </div>
 
 <div class="toast" id="toast"></div>
@@ -276,11 +302,72 @@ document.querySelectorAll('[data-op]').forEach(b=>b.onclick=async ()=>{
       for(let i=0;i<8;i++){ await new Promise(r=>setTimeout(r,2500)); const live=petNid&&await XamanBridge.fetchPet(petNid); if(live)pet=live; }
       await syncLedger(); refreshOps(); return; }
   }
+  if(petNid){                                              // LIVE pet, no Xaman: show the exact tx any wallet can send
+    showPaymentSpec(op); return;                           // never simulate over a real pet — that would diverge from the ledger
+  }
   pet=step(pet,OPNUM[op],nowLedger(),OWNER);               // LOCAL demo (no Xaman / standalone)
   if(JSON.stringify(pet)!==before){lastJoy=performance.now();toast(op+'! 💖');}
 });
 
-// boot: in a Xaman xApp, resolve the user + load/adopt a real on-ledger pet; else stay in local demo
+// A Ledgerlings interaction is an ordinary Payment. The issuer's poller reads it out of ledger
+// history (server.js parses MemoType "ledgerlings/op"), applies the open rules and NFTokenModifies
+// the pet, so ANY wallet can play — Xaman just makes it one tap. Showing the raw spec keeps a
+// keyless visitor on the real ledger instead of a simulation that would drift from it.
+const toHex=s=>Array.from(new TextEncoder().encode(s)).map(b=>b.toString(16).padStart(2,'0')).join('').toUpperCase();
+function showPaymentSpec(op){
+  const issuer=window.LEDGERLINGS_ISSUER||'(the issuer)';
+  const body=document.getElementById('pbody');
+  const spec=
+    `To play for real, send this from any XRPL wallet. The issuer picks it up from the ledger and applies the rules.\n\n`+
+    `Destination : ${issuer}\n`+
+    `Amount      : 10 drops (0.00001 XRP)\n`+
+    `MemoType    : ledgerlings/op        hex ${toHex('ledgerlings/op')}\n`+
+    `MemoData    : ${op}|${petNid}\n`+
+    `              hex ${toHex(op+'|'+petNid)}\n`+
+    `SourceTag   : 2606250001\n\n`+
+    `Your pet updates within a few ledgers, and Verify will still pass, because the same rules are `+
+    `replayed from that transaction. Nothing here is applied locally.`;
+  document.getElementById('ptitle').textContent=op+' — send this transaction';
+  body.textContent=spec;
+  open('pov');                                          // same overlay mechanism as Verify
+}
+
+// ── mode banner + share wiring, shared by both paths ──
+const BK=()=>window.LEDGERLINGS_BACKEND||'';
+function showShare(){ const sh=document.getElementById('share');
+  if(petNid&&BK()){ sh.style.display='block'; sh.onclick=()=>window.open(BK()+'/p/'+petNid,'_blank'); } }
+function setMode(){
+  const el=document.getElementById('mode');
+  if(petNid) el.innerHTML='🟢 <b>live on XRPL mainnet</b> · this pet is a real dNFT · '+
+    (BK()?`<a href="${BK()}/p/${petNid}" target="_blank" style="color:var(--hot)">view its public page</a>`:'');
+  else el.innerHTML='⚪️ <b>demo mode</b> · nothing here is on a ledger yet. Adopt above to mint a real one.';
+}
+
+// Poll the backend for authoritative state. The issuer's poller reconciles each pet to
+// replay(history), so this is the state the verifier checks, not a local guess.
+async function pullLive(){ if(!petNid) return; const live=await XamanBridge.fetchPet(petNid); if(live){ pet=live; refreshOps(); } }
+
+// Keyless adopt. POST /adopt is public and takes any classic address, so a visitor with no wallet
+// software still gets a real, source-tagged, mainnet mint. This is the same endpoint that passed
+// the Make Waves mainnet gate on 2026-07-30.
+async function keylessAdopt(addr){
+  const msg=document.getElementById('kMsg'), go=document.getElementById('kGo');
+  if(!/^r[1-9A-HJ-NP-Za-km-z]{24,34}$/.test(addr)){ msg.textContent='That does not look like an XRPL address (starts with r).'; return; }
+  go.disabled=true; msg.textContent='minting on mainnet…';
+  let a=null; try{ a=await (await fetch(BK()+'/adopt',{method:'POST',headers:{'content-type':'application/json'},
+    body:JSON.stringify({owner:addr})})).json(); }catch(e){ a={error:String(e.message||e)}; }
+  go.disabled=false;
+  if(!a||a.error||!a.nid){ msg.textContent='could not adopt: '+((a&&a.error)||'unknown error'); return; }
+  OWNER=addr; petNid=a.nid; if(a.state) pet=a.state;
+  msg.innerHTML=a.existing?'You already had one. Loaded it.':'Minted. It is on mainnet now.';
+  document.getElementById('keyless').style.display='none';
+  await syncLedger(); setInterval(syncLedger,30000);
+  setInterval(pullLive,15000);
+  showShare(); setMode(); refreshOps();
+  toast('adopted on mainnet 🎉');
+}
+
+// boot: prefer the Xaman xApp path; fall back to keyless adopt; otherwise stay a labelled demo
 (async()=>{
   xamanReady=await XamanBridge.init();
   if(xamanReady){ OWNER=XamanBridge.account;
@@ -288,10 +375,13 @@ document.querySelectorAll('[data-op]').forEach(b=>b.onclick=async ()=>{
     if(a&&a.nid){ petNid=a.nid; if(a.state) pet=a.state; }
     toast('connected: '+OWNER.slice(0,8)+'…');
     await syncLedger(); setInterval(syncLedger,30000);     // real ledger for cooldown gray-out
-    const BK=window.LEDGERLINGS_BACKEND||'';               // shareable public pet page (the viral loop)
-    if(petNid&&BK){ const sh=document.getElementById('share'); sh.style.display='block';
-      sh.onclick=()=>window.open(BK+'/p/'+petNid,'_blank'); }
+    showShare();
+  } else if(BK()){
+    document.getElementById('keyless').style.display='block';
+    document.getElementById('kGo').onclick=()=>keylessAdopt(document.getElementById('kAddr').value.trim());
+    document.getElementById('kAddr').addEventListener('keydown',e=>{ if(e.key==='Enter') document.getElementById('kGo').click(); });
   }
+  setMode();
 })();
 
 // ── Xaman xApp wiring is REAL and lives in xaman_bridge.js (init/interact/adopt/fetchPet). ──
