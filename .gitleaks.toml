@@ -1,0 +1,29 @@
+# gitleaks config for Ledgerlings
+#
+# The pre-commit hook flagged an XRPL classic address in MAINNET_CUTOVER_CHECKLIST.md as a
+# generic-api-key on entropy (4.68). It is a false positive, and it will keep recurring because
+# this repo's docs and code are full of account addresses.
+#
+# Why allowlisting r-addresses is safe. An XRPL classic address is a public identifier derived
+# from the public key. It is what you publish so people can pay you, and it is what block
+# explorers index. The secret half of an XRPL keypair is the seed, which is base58 starting with
+# lowercase 's' (family seed) and is a completely different shape. Allowlisting r-addresses
+# therefore cannot mask a real credential leak.
+#
+# Seeds are deliberately NOT allowlisted anywhere in this file. LEDGERLINGS_ISSUER_SEED must never
+# be committed; it lives only in Railway env.
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "xrpl-family-seed"
+description = "XRPL family seed (secret). Must never be committed; belongs in env only."
+regex = '''\bs[1-9A-HJ-NP-Za-km-z]{28}\b'''
+keywords = ["s"]
+
+[allowlist]
+description = "XRPL classic addresses are public identifiers, not secrets"
+regexes = [
+  '''\br[1-9A-HJ-NP-Za-km-z]{24,33}\b''',
+]
