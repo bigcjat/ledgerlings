@@ -70,13 +70,15 @@ const ylw = s => `\x1b[33m${s}\x1b[0m`;
 
 function prompt(question, hidden) {
   return new Promise((resolve, reject) => {
-    const fs = require('fs');
-    let fd;
-    try { fd = fs.openSync('/dev/tty', 'r+'); }
-    catch { return reject(new Error('no terminal available; run this in a real Terminal window')); }
+    if (!process.stdin.isTTY) {
+      return reject(new Error('no terminal attached; run this in a real Terminal window'));
+    }
+    // Earlier this opened /dev/tty and handed the same file descriptor to a ReadStream, a
+    // WriteStream AND a manual closeSync. Three owners of one descriptor, so the second prompt
+    // died with EBADF after the first one closed it. stdin/stdout were always sufficient here.
     const rl = require('readline').createInterface({
-      input: fs.createReadStream(null, { fd }),
-      output: fs.createWriteStream(null, { fd }),
+      input: process.stdin,
+      output: process.stdout,
       terminal: true,
     });
     if (hidden) {
@@ -86,7 +88,7 @@ function prompt(question, hidden) {
         else if (['\r\n', '\n', '\r'].includes(str)) rl.output.write(str);
       };
     }
-    rl.question(question, a => { rl.close(); try { fs.closeSync(fd); } catch {} resolve(a.trim()); });
+    rl.question(question, a => { rl.close(); resolve(a.trim()); });
   });
 }
 
