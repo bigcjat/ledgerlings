@@ -12,3 +12,11 @@ __pycache__/
 node_modules/
 *.log
 .env
+# private/internal — must never be published (repo is public)
+JENNA_CALL_PREP.md
+jenna-call-cuecard.html
+SHARED_ENGINE.md
+CREATOR_ECONOMICS.md
+FOUNDERS_CLUB.md
+MAINNET_CUTOVER_CHECKLIST.md
+.firecrawl/
