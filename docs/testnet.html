@@ -612,7 +612,10 @@ function renderVerify(){
 }
 document.getElementById('verify').onclick=async ()=>{
   open('vov'); vRig=null; const V=document.getElementById('vbody');
-  if(!xamanReady||!petNid){ vLast=null; V.innerHTML=VINTRO+`<span class="ok">✅ LOCAL DEMO — running the open rules in your browser; nothing on-ledger to dispute.</span>`; return; }
+  // A live pet is verifiable whether or not the Xaman SDK ever loaded: the replay is a backend call
+  // (XamanBridge.verify → GET /verify/:nid) and needs no wallet. Gating this on xamanReady told every
+  // keyless adopter — the headline no-wallet flow — that their real mainnet pet was a local demo.
+  if(!petNid){ vLast=null; V.innerHTML=VINTRO+`<span class="ok">✅ LOCAL DEMO — running the open rules in your browser; nothing on-ledger to dispute.</span>`; return; }
   V.innerHTML=VINTRO+`<span style="opacity:.7">Re-deriving from ledger history…</span>`;
   const v=await XamanBridge.verify(petNid);
   if(v&&v.verdict==='PASS'&&v.derived&&v.current){ vLast={derived:v.derived,current:v.current,interactions:v.interactions}; renderVerify(); }
