@@ -15,7 +15,8 @@
   "dependencies": {
     "express": "^4.19.2",
     "xrpl": "^4.0.0",
-    "xumm-sdk": "^1.11.2"
+    "xumm-sdk": "^1.11.2",
+    "ws": "^8.18.0"
   },
   "devDependencies": {
     "xrpl-secret-numbers": "^0.3.5"

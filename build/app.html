@@ -597,9 +597,21 @@ function renderVerify(){
     ? `<span class="bad">🚨 DIVERGED — CAUGHT. The operator wrote <b>${rig.k}=${rig.fake}</b>, but re-running the open rules over the ledger says <b>${rig.k}=${rig.real}</b>. Anyone re-derives it and sees the lie.</span>`
     : `<span class="ok">✅ VERIFIED — all ${n} interaction${n===1?'':'s'} reproduce from the open rules. Re-derived == on-ledger. The game played fair.</span>`;
   const table=`<table style="margin:10px 0;font-size:13px;border-collapse:collapse"><tr style="opacity:.55"><td></td><td style="padding:0 12px">rules say</td><td>on-ledger</td></tr>${rows}</table>`;
+  const ev=vLast.evidence;
+  const evidence = (ev && ev.method==='quorum')
+    ? `<div style="margin:10px 0;padding:9px 11px;background:rgba(0,255,102,.05);border-left:3px solid var(--ok,#0b5);font-size:11.5px;line-height:1.7;opacity:.9">`+
+      `<b>${ev.nodes_agreed} independent XRPL nodes agreed</b> on this history.<br>`+
+      `pinned at ledger <b>${ev.ledger_index}</b> &middot; ${ev.transactions} transactions<br>`+
+      `<span style="opacity:.7">ledger hash</span> <span style="font-family:monospace">${String(ev.ledger_hash).slice(0,24)}…</span><br>`+
+      `<span style="opacity:.7">bundle hash</span> <span style="font-family:monospace">${String(ev.bundle_hash).slice(0,24)}…</span><br>`+
+      `<span style="opacity:.6">Re-run it yourself and you get the same bundle hash, or a different one — which tells you just as much.</span>`+
+      `</div>`
+    : (ev && ev.method==='single-node'
+        ? `<div style="margin:10px 0;font-size:11.5px;color:var(--bad,#f66)">⚠ verified against one endpoint only (${ev.reason||'quorum unavailable'}) — weaker than usual, re-run later.</div>`
+        : '');
   const btn=rig?`<button id="vrigreset" style="${VBTN}">↺ reset — show the honest record</button>`
                :`<button id="vrig" style="${VBTN}">😈 Simulate a cheating operator</button>`;
-  V.innerHTML=VINTRO+banner+table+btn+
+  V.innerHTML=VINTRO+banner+table+evidence+btn+
     `<div style="opacity:.55;margin-top:8px;font-size:12px">This "rig" is a client-side simulation of the check — it never touches the ledger. It shows what the verifier does: compare a faithful replay to the on-chain state. A real operator lie fails exactly this way, for everyone.</div>`;
   const rb=document.getElementById('vrig'); if(rb) rb.onclick=()=>{ vRig=pickRig(d); renderVerify(); };
   const rr=document.getElementById('vrigreset'); if(rr) rr.onclick=()=>{ vRig=null; renderVerify(); };
@@ -612,7 +624,7 @@ document.getElementById('verify').onclick=async ()=>{
   if(!petNid){ vLast=null; V.innerHTML=VINTRO+`<span class="ok">✅ LOCAL DEMO — running the open rules in your browser; nothing on-ledger to dispute.</span>`; return; }
   V.innerHTML=VINTRO+`<span style="opacity:.7">Re-deriving from ledger history…</span>`;
   const v=await XamanBridge.verify(petNid);
-  if(v&&v.verdict==='PASS'&&v.derived&&v.current){ vLast={derived:v.derived,current:v.current,interactions:v.interactions}; renderVerify(); }
+  if(v&&v.verdict==='PASS'&&v.derived&&v.current){ vLast={derived:v.derived,current:v.current,interactions:v.interactions,evidence:v.evidence}; renderVerify(); }
   else if(v&&v.verdict==='DIVERGED'){ vLast=null; V.innerHTML=VINTRO+`<span class="bad">🚨 DIVERGED — the on-ledger state does NOT match a faithful replay. ${v.reason||''}</span>`; }
   else { vLast=null; V.innerHTML=VINTRO+`<span style="opacity:.7">Could not verify right now (${(v&&v.reason)||'no backend'}).</span>`; }
 };

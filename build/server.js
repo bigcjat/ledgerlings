@@ -19,6 +19,7 @@ const crypto = require('crypto');
 const R = require('./pet_rules.js');
 const A = require('./achievements.js');
 const BR = require('./battle_rules.js');
+const { verifyPetQuorum } = require('./verify_quorum.cjs');
 
 // sdk only needed for /interact (verifying signed payloads); lazy so /adopt + /pet + tests run without it.
 const sdk = process.env.XAMAN_API_KEY ? new XummSdk(process.env.XAMAN_API_KEY, process.env.XAMAN_API_SECRET) : null;
@@ -327,9 +328,58 @@ async function verifyAchievement(c, issuer, achNid) {
               : 'this pet never earned this badge under the open rules' };
 }
 
+/* Re-derive a pet from ledger history.
+ *
+ * Answered by the quorum engine: a validated ledger that several independent nodes agree on, history
+ * read from all of them, and a refusal to answer if they disagree. The response keeps the original
+ * shape (verdict / derived / current / interactions) so existing clients are unaffected, and adds the
+ * evidence a third party needs to reproduce the result — the pinned ledger, which endpoints agreed,
+ * the transaction digest, and a bundle hash.
+ *
+ * Falls back to the single-node verifier only if the quorum cannot be formed (endpoints unreachable),
+ * and says so in the response rather than silently downgrading.
+ */
 app.get('/verify/:nid', async (req, res) => {
-  try { res.json(await withClient((c, w) => verifyPet(c, w.classicAddress, req.params.nid))); }
-  catch (e) { res.status(500).json({ ok: false, verdict: 'ERROR', reason: e.message }); }
+  const nid = req.params.nid;
+  // Same resolution withClient uses: act as ISSUER_ADDRESS when a RegularKey is configured,
+  // otherwise the signing wallet's own account.
+  const issuer = ISSUER_ADDRESS || walletFromSeed(ISSUER_SEED).classicAddress;
+  try {
+    const b = await verifyPetQuorum(issuer, nid);
+    return res.json({
+      ok: b.verdict === 'MATCH',
+      verdict: b.verdict === 'MATCH' ? 'PASS' : b.verdict,
+      nid,
+      interactions: (b.meta && b.meta.reducer && b.meta.reducer.interactions) ?? 0,
+      derived: b.derived,
+      current: b.claimed,
+      divergence: b.divergence,
+      evidence: {
+        method: 'quorum',
+        ledger_index: b.pin.ledger_index,
+        ledger_hash: b.pin.ledger_hash,
+        nodes_agreed: b.pin.agreed_by.length,
+        endpoints: b.pin.agreed_by,
+        history_digest: b.history.digest,
+        transactions: b.history.count,
+        reducer: b.reducer,
+        bundle_hash: b.bundle_hash,
+      },
+    });
+  } catch (e) {
+    // A disagreement between nodes is a real signal, not a transport hiccup — never fall back on it.
+    if (e.fatal) {
+      return res.status(409).json({ ok: false, verdict: 'ENDPOINTS_DISAGREE',
+        reason: e.message, detail: e.detail || null });
+    }
+    try {
+      const out = await withClient((c, w) => verifyPet(c, w.classicAddress, nid));
+      return res.json({ ...out, evidence: { method: 'single-node',
+        note: 'quorum unavailable, verified against one endpoint only', reason: e.message } });
+    } catch (e2) {
+      return res.status(500).json({ ok: false, verdict: 'ERROR', reason: e2.message });
+    }
+  }
 });
 
 // claim: mint any newly-earned badges for a pet (admin, idempotent). Optional body.achId limits to one.
