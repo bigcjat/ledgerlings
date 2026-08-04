@@ -14,7 +14,8 @@ DECAY_NUM, DECAY_DEN = 60, DAY    # ~60 stat points lost per day of neglect (12h
 RESTORE = 50                      # feed/play top-up; must exceed inter-visit decay or a pet can't be saved
 FEED_COOLDOWN = DAY // 6          # ~4h
 PLAY_COOLDOWN = DAY // 6
-STAGE_AGE = [0, 1 * DAY, 3 * DAY, 7 * DAY, 21 * DAY]   # EGG/BABY/TEEN/ADULT/ELDER thresholds
+HATCH = 60                        # ~4 min: hatch quickly so a new player sees a baby, not a day-long egg
+STAGE_AGE = [0, HATCH, 3 * DAY, 7 * DAY, 21 * DAY]   # EGG/BABY/TEEN/ADULT/ELDER thresholds
 LIFESPAN = 40 * DAY
 CARE_GOOD, CARE_CEIL = 10, 10
 
