@@ -290,7 +290,7 @@ function updateMoodBadge(mkt){
   else { const d=mkt.dPct; p.textContent=(d>=0?'+':'')+d.toFixed(2)+'%'; b.classList.remove('stale'); }
 }
 document.getElementById('moodBadge').onclick=()=>{
-  open('mov');
+  openModal('mov');
   const mkt=window.MarketMood?MarketMood.get():null;
   const body=document.getElementById('mbody');
   if(!mkt || mkt.price===null){
@@ -468,7 +468,7 @@ function showPaymentSpec(op){
     `replayed from that transaction. Nothing here is applied locally.`;
   document.getElementById('ptitle').textContent=op+' — send this transaction';
   body.textContent=spec;
-  document.getElementById('pov').classList.add('on');   // not open(): that name shadows window.open
+  openModal('pov');
 }
 
 // ── mode banner + share wiring, shared by both paths ──
@@ -559,7 +559,7 @@ async function keylessAdopt(addr){
 // ── DANCE mini-game (tap-to-beat; awards BOUNDED happiness on close) ──
 const DC=document.getElementById('dc'),DX=DC.getContext('2d');
 let dRun=false,dT0=0,dBpm=120,dBeat=500,dScore=0,dCombo=0,dBest=0,dHappy=0,dLastHit=-1e9,dParts=[];
-document.getElementById('danceBtn').onclick=()=>{open('dance');dRun=true;dT0=performance.now();dScore=dCombo=dHappy=0;};
+document.getElementById('danceBtn').onclick=()=>{openModal('dance');dRun=true;dT0=performance.now();dScore=dCombo=dHappy=0;};
 function dTap(){ if(!dRun)return; const ph=((performance.now()-dT0)%dBeat+dBeat)%dBeat, e=Math.min(ph,dBeat-ph);
   let col; if(e<70){dCombo++;dScore+=3;col=HOT;} else if(e<140){dCombo++;dScore+=1;col=GLOW;} else {dCombo=0;col=GREY;}
   dBest=Math.max(dBest,dCombo); if(e<140){dLastHit=performance.now(); if(dCombo%4===0)dHappy=Math.min(10,dHappy+1);
@@ -617,7 +617,7 @@ function renderVerify(){
   const rr=document.getElementById('vrigreset'); if(rr) rr.onclick=()=>{ vRig=null; renderVerify(); };
 }
 document.getElementById('verify').onclick=async ()=>{
-  open('vov'); vRig=null; const V=document.getElementById('vbody');
+  openModal('vov'); vRig=null; const V=document.getElementById('vbody');
   // A live pet is verifiable whether or not the Xaman SDK ever loaded: the replay is a backend call
   // (XamanBridge.verify → GET /verify/:nid) and needs no wallet. Gating this on xamanReady told every
   // keyless adopter — the headline no-wallet flow — that their real mainnet pet was a local demo.
@@ -630,7 +630,7 @@ document.getElementById('verify').onclick=async ()=>{
 };
 
 // overlay open/close
-function open(id){document.getElementById(id).classList.add('on');}
+function openModal(id){document.getElementById(id).classList.add('on');}
 document.querySelectorAll('[data-close]').forEach(x=>x.onclick=()=>{document.getElementById(x.dataset.close).classList.remove('on');if(x.dataset.close==='dance')dRun=false;});
 addEventListener('keydown',e=>{if(e.code==='Space'&&document.getElementById('dance').classList.contains('on')){e.preventDefault();dTap();}});
 

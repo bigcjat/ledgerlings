@@ -13,6 +13,11 @@ node_modules/
 *.log
 .env
 # private/internal — must never be published (repo is public)
+# globs first: named entries only catch files someone already thought of, which is
+# how a Make Waves call cue card (with "do not say" notes) got written in here on 08-05.
+*cuecard*.html
+*CALL_PREP*
+*_PRIVATE.*
 JENNA_CALL_PREP.md
 jenna-call-cuecard.html
 SHARED_ENGINE.md
