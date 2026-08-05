@@ -833,7 +833,14 @@ app.get('/ladder-rank/:nid', async (req, res) => {
       battles.sort((a, b) => a.lseq - b.lseq);
       let wins = 0, streak = 0, best = -1;
       for (const b of battles) { if (b.win) { wins++; streak++; best = Math.max(best, b.rung); } else if (b.win === false) streak = 0; }
-      return { nid, resolved: battles.filter(b => b.win !== null).length, wins, currentStreak: streak, highestRungBeaten: best, highestRungName: best >= 0 ? LADDER[best].name : null };
+      // last RESOLVED battle, so the client can show a pet is freshly scuffed. This is a pure
+      // projection of on-ledger battle records — the same trust model as the achievement badges —
+      // so it changes no pet state and cannot make /verify diverge.
+      const settled = battles.filter(b => b.win !== null);
+      const last = settled.length ? settled[settled.length - 1] : null;
+      return { nid, resolved: settled.length, wins, currentStreak: streak, highestRungBeaten: best,
+        highestRungName: best >= 0 ? LADDER[best].name : null,
+        lastLedger: last ? last.lseq : null, lastWin: last ? last.win : null };
     });
     res.json(out);
   } catch (e) { res.status(500).json({ error: e.message }); }

@@ -248,6 +248,18 @@ function drawPet(X,cx,cy,bounce,squash,coreGlow,mood,mkt){
 function mood(){ if(pet.alive===0)return'dead'; if(pet.health<35||pet.hunger<20||pet.happiness<20)return'sad';
   if(performance.now()-lastJoy<700)return'happy'; return'idle'; }
 
+// A plaster across one cheek after a lost fight. Cosmetic only: it is drawn from the on-ledger
+// battle record and fades on its own, and nothing here is ever written back to the pet.
+function drawBandaid(X,cx,cy,bounce){
+  const x=cx+13, y=cy-6-bounce;
+  X.save(); X.translate(x,y); X.rotate(-0.38);
+  X.fillStyle='#f2d6b3'; X.fillRect(-9,-3.5,18,7);
+  X.fillStyle='#e0bd94'; X.fillRect(-3.5,-3.5,7,7);
+  X.fillStyle='#cfa87c';
+  for(let i=-1;i<=1;i++){ X.fillRect(-1.5+i*2.2,-1.6,1,1); X.fillRect(-1.5+i*2.2,0.6,1,1); }
+  X.restore();
+}
+
 // ── main render loop ──
 const C=document.getElementById('c'),X=C.getContext('2d');
 let lastJoy=-1e9;
@@ -265,6 +277,7 @@ function tick(){
   // shake wobble: a decaying horizontal jitter layered on the normal bounce. Visual only.
   const sw = shakeActive() ? Math.sin(performance.now()/28)*7*((shakeUntil-performance.now())/600) : 0;
   drawPet(X,100+sw,120,bp*5,(1-bp)*0.2,0.25+0.25*bp,mood(),mkt);
+  if(scuffed()) drawBandaid(X,100+sw,120,bp*5);
   updateMoodBadge(mkt);
   // hud
   document.getElementById('bH').style.width=pet.hunger+'%';
@@ -456,10 +469,20 @@ async function loadLadder(){
   box.style.display='block';
   refreshRank();
 }
+let lastFightLedger=null, lastFightWin=null;
+const BANDAID_LEDGERS=1800;                       // ~2h at ~4s ledgers: scuffed, then healed
+function scuffed(){
+  if(lastFightWin!==false || lastFightLedger==null) return false;   // only a LOSS leaves a mark
+  const n=nowL(); return n!=null && (n-lastFightLedger)<BANDAID_LEDGERS;
+}
 async function refreshRank(){
   if(!BK()||!petNid) return;
   try{
     const j=await (await fetch(BK()+'/ladder-rank/'+petNid)).json();
+    // Bandaids are a PURE PROJECTION of on-ledger battle records, like the achievement badges.
+    // They read battle history and draw on top; they never touch pet state, so they cannot make
+    // /verify diverge. A pet that lost a fight recently looks like it lost a fight recently.
+    if(j){ lastFightLedger = j.lastLedger; lastFightWin = j.lastWin; }
     if(j && (j.wins!=null))
       document.getElementById('lMsg').textContent=`your record: ${j.wins} win(s) · streak ${j.streak||0} · best rung ${j.highestRung!=null?j.highestRung:'-'}`;
   }catch{ /* rank is cosmetic */ }
