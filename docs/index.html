@@ -248,6 +248,14 @@ function drawPet(X,cx,cy,bounce,squash,coreGlow,mood,mkt){
 function mood(){ if(pet.alive===0)return'dead'; if(pet.health<35||pet.hunger<20||pet.happiness<20)return'sad';
   if(performance.now()-lastJoy<700)return'happy'; return'idle'; }
 
+// Declared ABOVE tick(): the render loop starts on the next line block and calls scuffed() on its
+// FIRST frame, so a `let` further down the file is still in the temporal dead zone and throws
+// ReferenceError — which kills the render AND aborts the rest of the script (mode banner, adopt
+// box, share). node --check does not catch this; only loading the page does.
+let shakeK=0, shakeUntil=0;
+let lastFightLedger=null, lastFightWin=null;
+const BANDAID_LEDGERS=1800;                       // ~2h at ~4s ledgers: scuffed, then healed
+
 // A plaster across one cheek after a lost fight. Cosmetic only: it is drawn from the on-ledger
 // battle record and fades on its own, and nothing here is ever written back to the pet.
 function drawBandaid(X,cx,cy,bounce){
@@ -469,8 +477,6 @@ async function loadLadder(){
   box.style.display='block';
   refreshRank();
 }
-let lastFightLedger=null, lastFightWin=null;
-const BANDAID_LEDGERS=1800;                       // ~2h at ~4s ledgers: scuffed, then healed
 function scuffed(){
   if(lastFightWin!==false || lastFightLedger==null) return false;   // only a LOSS leaves a mark
   const n=nowL(); return n!=null && (n-lastFightLedger)<BANDAID_LEDGERS;
@@ -779,7 +785,6 @@ addEventListener('pointerdown',function boot(){ removeEventListener('pointerdown
 //
 // iOS 13+ gates DeviceMotionEvent behind a permission prompt that is only granted from a user
 // gesture, so it is requested on the first tap rather than at load, where it would be refused.
-let shakeK=0, shakeUntil=0;
 function shakeActive(){ return performance.now()<shakeUntil; }
 function onMotion(e){
   const a=e.accelerationIncludingGravity; if(!a) return;
