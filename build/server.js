@@ -690,12 +690,22 @@ app.get('/verify-battle/:battleId', async (req, res) => {
 app.post('/sign', async (req, res) => {
   if (!sdk) return res.status(503).json({ error: 'signing not configured (set XAMAN_API_KEY and XAMAN_API_SECRET)' });
   const { kind, owner, nid, op, rung } = req.body || {};
-  if (!xrpl.isValidClassicAddress(owner || '')) return res.status(400).json({ error: 'valid owner address required' });
+  // signin is the one kind that cannot know the address yet — discovering it IS the point.
+  // Every other kind still requires a valid owner up front.
+  if (kind !== 'signin' && !xrpl.isValidClassicAddress(owner || '')) {
+    return res.status(400).json({ error: 'valid owner address required' });
+  }
 
   try {
     let txjson, instruction;
 
-    if (kind === 'interact') {
+    if (kind === 'signin') {
+      // Xaman's SignIn pseudo-transaction. It is never submitted to a ledger and moves no
+      // value; it only proves the user controls the account they resolve with. This keeps
+      // /sign a fixed menu of intents rather than a generic signing proxy.
+      txjson = { TransactionType: 'SignIn' };
+      instruction = 'Sign in to Ledgerlings. This moves no funds and is not a ledger transaction.';
+    } else if (kind === 'interact') {
       if (!R.OP[op]) return res.status(400).json({ error: 'unknown op' });
       if (!nid) return res.status(400).json({ error: 'nid required' });
       txjson = { TransactionType: 'Payment', Account: owner, Destination: ISSUER_ADDRESS || undefined,
@@ -727,12 +737,19 @@ app.post('/sign', async (req, res) => {
       return res.status(400).json({ error: "kind must be 'interact' or 'ladder'" });
     }
 
-    const payload = await sdk.payload.create({ txjson: tag(txjson), custom_meta: { instruction } });
+    // A SignIn payload proves control of an address and moves nothing, so it is not
+    // SourceTagged (it never reaches a ledger) and carries no Account of its own.
+    const payload = await sdk.payload.create(
+      kind === 'signin' ? { txjson, custom_meta: { instruction } }
+                        : { txjson: tag(txjson), custom_meta: { instruction } });
     if (!payload) return res.status(502).json({ error: 'Xaman did not return a payload' });
     res.json({
       uuid: payload.uuid,
       next: payload.next && payload.next.always,     // open this: Xaman deep link on mobile, QR on desktop
       qr: payload.refs && payload.refs.qr_png,
+      // Xaman hands us a status socket per payload. The frontend subscribes to it instead of
+      // polling; polling stays as the fallback for when the socket cannot be opened.
+      ws: payload.refs && payload.refs.websocket_status,
       pinnedLedger: (res.locals && res.locals.pinnedLedger) || undefined,
     });
   } catch (e) { res.status(500).json({ error: e.message }); }
@@ -745,7 +762,9 @@ app.get('/sign/:uuid', async (req, res) => {
     const pl = await sdk.payload.get(req.params.uuid);
     if (!pl) return res.status(404).json({ error: 'not found' });
     res.json({ signed: !!(pl.meta && pl.meta.signed), cancelled: !!(pl.meta && pl.meta.cancelled),
-      expired: !!(pl.meta && pl.meta.expired), txid: pl.response && pl.response.txid });
+      expired: !!(pl.meta && pl.meta.expired), txid: pl.response && pl.response.txid,
+      // resolved signer — this is what a signin returns instead of a txid
+      account: pl.response && pl.response.account });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 

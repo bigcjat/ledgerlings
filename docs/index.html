@@ -343,7 +343,7 @@ document.querySelectorAll('[data-op]').forEach(b=>b.onclick=async ()=>{
     const j=await signRequest({kind:'interact', owner:OWNER, nid:petNid, op},
       op+' your Ledgerling',
       'Approve a 10-drop Payment in Xaman. The issuer reads it from the ledger and applies the open rules.');
-    if(j) watchSign(j.uuid, ()=>{ setTimeout(pullLive, 6000); toast(op+' signed 💖'); });
+    if(j) watchSign(j.uuid, ()=>{ setTimeout(pullLive, 6000); toast(op+' signed 💖'); }, {ws:j.ws});
     return;
   }
   pet=step(pet,OPNUM[op],nowLedger(),OWNER);               // LOCAL demo (no Xaman / standalone)
@@ -372,17 +372,58 @@ async function signRequest(body, title, note){
     `<div id="sgStat" style="margin-top:10px;opacity:.8;font-size:12px">waiting for you to approve…</div>`;
   return j;
 }
-// Poll until Xaman reports the payload signed, cancelled or expired.
-function watchSign(uuid, onSigned){
-  let tries=0;
-  const t=setInterval(async ()=>{
-    if(++tries>60){ clearInterval(t); return; }
-    let r=null; try{ r=await (await fetch(BK()+'/sign/'+uuid)).json(); }catch{ return; }
+// Close the sign overlay. Called automatically once Xaman resolves the payload so the user is
+// not left dismissing a dialog they have already finished with.
+function closeSign(delay){
+  setTimeout(()=>{ const ov=document.getElementById('lov'); if(ov) ov.classList.remove('on'); }, delay||900);
+}
+
+// Watch a sign request to resolution.
+//
+// Xaman returns a per-payload status socket (refs.websocket_status) with the payload itself, so
+// the resolution is PUSHED the instant the user approves rather than found up to 3s later by the
+// next poll. Polling is kept as a fallback: the socket can fail to open behind a proxy, and a
+// silent socket is indistinguishable from a slow user, so we must not depend on it alone.
+//
+// `settle` is guarded because both transports can report the same outcome; whichever arrives
+// first wins and the other is torn down.
+function watchSign(uuid, onSigned, opts){
+  const wsUrl=(opts&&opts.ws)||null;
+  let done=false, sock=null, timer=null;
+
+  const stop=()=>{ if(timer) clearInterval(timer); if(sock){ try{ sock.close(); }catch{} sock=null; } };
+  const settle=(r)=>{
+    if(done) return;
     const st=document.getElementById('sgStat');
-    if(r.signed){ clearInterval(t); if(st) st.textContent='signed ✓'; onSigned&&onSigned(r.txid); }
-    else if(r.cancelled){ clearInterval(t); if(st) st.textContent='cancelled'; }
-    else if(r.expired){ clearInterval(t); if(st) st.textContent='expired'; }
-  },3000);
+    if(r.signed){ done=true; stop(); if(st) st.textContent='signed ✓'; closeSign(); onSigned&&onSigned(r.txid,r.account); }
+    else if(r.cancelled){ done=true; stop(); if(st) st.textContent='cancelled'; closeSign(1400); }
+    else if(r.expired){ done=true; stop(); if(st) st.textContent='expired'; closeSign(1400); }
+  };
+
+  // authoritative read through our own backend, so a push only ever triggers a confirm
+  const confirm=async ()=>{
+    try{ settle(await (await fetch(BK()+'/sign/'+uuid)).json()); }catch{}
+  };
+
+  if(wsUrl && 'WebSocket' in window){
+    try{
+      sock=new WebSocket(wsUrl);
+      sock.onmessage=(ev)=>{
+        let m=null; try{ m=JSON.parse(ev.data); }catch{ return; }
+        // Xaman pushes {signed:true|false} on resolution, plus heartbeat/opened frames we ignore.
+        if(m && (m.signed!==undefined || m.expired!==undefined)) confirm();
+      };
+      sock.onerror=()=>{ try{ sock.close(); }catch{} sock=null; };  // fallback keeps running
+    }catch{ sock=null; }
+  }
+
+  // fallback / safety net: slower cadence than before because the socket normally wins
+  let tries=0;
+  timer=setInterval(()=>{
+    if(done) return stop();
+    if(++tries>60) return stop();
+    confirm();
+  }, sock?6000:3000);
 }
 
 // ── NPC ladder ───────────────────────────────────────────────────────────────────────────────────
@@ -425,7 +466,7 @@ async function challengeRung(rung,name){
   watchSign(j.uuid, txid=>{
     document.getElementById('lMsg').textContent='challenge signed. Settling once the pinned ledger closes, about a minute.';
     watchBattle(txid);
-  });
+  }, {ws:j.ws});
 }
 
 // Poll for the result memo the issuer writes once the pinned ledger closes.
@@ -519,31 +560,34 @@ async function keylessAdopt(addr){
     document.getElementById('keyless').style.display='block';
     document.getElementById('kGo').onclick=()=>keylessAdopt(document.getElementById('kAddr').value.trim());
     document.getElementById('kAddr').addEventListener('keydown',e=>{ if(e.key==='Enter') document.getElementById('kGo').click(); });
-    // Xaman sign-in, when an API key is configured. Offered as a button rather than run at load,
-    // because authorize() opens a popup and browsers block popups that are not user-initiated.
-    // Sign-in intentionally NOT offered. xumm.authorize() hangs on desktop and mobile alike, and it
-    // buys nothing now: /sign builds payloads server-side from just an address, so a player signs
-    // real transactions in Xaman without ever connecting a wallet to the page.
-    if(false){
+    // Xaman sign-in, via a SERVER-BUILT SignIn payload.
+    //
+    // The browser SDK's xumm.authorize() hangs on desktop and mobile alike, which is why this was
+    // disabled behind if(false) for weeks. It is not needed: a SignIn is just another payload, so
+    // the backend can create it exactly like an interact or a ladder challenge, and the user gets
+    // the same link-plus-QR they already use to sign everything else. Nothing is auto-opened, so
+    // there is no popup for a browser to block, and watchSign() resolves it over Xaman's own
+    // status socket and closes the dialog by itself.
+    //
+    // A SignIn moves no value and never reaches a ledger. All it does is save the player typing
+    // an address, so the keyless paste-an-address path stays available underneath.
+    {
       const sb=document.getElementById('kSign'); sb.style.display='block';
       document.getElementById('kOr').style.display='block';
       sb.onclick=async ()=>{
-        sb.disabled=true; sb.textContent='opening Xaman…';
         const msg=document.getElementById('kMsg');
-        msg.textContent='a Xaman window should open. Scan the QR with Xaman on your phone.';
-        // If the browser blocked the popup, the SDK would wait forever with nothing on screen.
-        // Show the link instead: clicking it is user-initiated, so it always opens.
-        const acct=await XamanBridge.signIn(url=>{
-          msg.innerHTML='Your browser blocked the Xaman window. '+
-            `<a href="${url}" target="_blank" rel="noopener" style="color:var(--hot)">Open the Xaman sign-in</a>`+
-            ' and scan the QR with Xaman on your phone.';
-        });
+        sb.disabled=true; sb.textContent='creating sign-in…'; msg.textContent='';
+        const j=await signRequest({kind:'signin'}, 'Sign in with Xaman',
+          'Approve the sign-in in Xaman. This moves no funds and is not a ledger transaction.');
         sb.disabled=false; sb.textContent='Sign in with Xaman';
-        if(!acct){ if(!/blocked/.test(msg.textContent)) msg.textContent='sign-in did not complete'; return; }
-        msg.textContent='';
-        xamanReady=true;                       // interactions can now be signed rather than copied out
-        document.getElementById('kAddr').value=acct;
-        await keylessAdopt(acct);              // same public /adopt; the signed-in account owns it
+        if(!j) return;
+        watchSign(j.uuid, async (_txid, account)=>{
+          if(!account){ msg.textContent='Xaman did not return an address.'; return; }
+          xamanReady=true;                     // interactions can be signed rather than copied out
+          document.getElementById('kAddr').value=account;
+          msg.textContent='signed in as '+account.slice(0,10)+'…';
+          await keylessAdopt(account);         // same public /adopt; the signed-in account owns it
+        }, {ws:j.ws});
       };
     }
   }
