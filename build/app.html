@@ -331,8 +331,10 @@ async function syncLedger(){ const l=await XamanBridge.now(); if(l){ liveLedger0
 function opReady(op){ if(op!=='feed'&&op!=='play') return true; const n=nowL(); if(n==null) return false; const last=op==='feed'?pet.last_feed:pet.last_play; return !last || (n-last)>=COOLDOWN; }
 function refreshOps(){ document.querySelectorAll('[data-op]').forEach(b=>{ const op=b.dataset.op; if(op==='feed'||op==='play'){ const rdy=opReady(op); b.disabled=!rdy; b.style.opacity=rdy?'':'.4'; b.title=rdy?'':'on cooldown — feeding/playing again now is a no-op (no-farming rule)'; } }); }
 setInterval(refreshOps,1000);
-document.querySelectorAll('[data-op]').forEach(b=>b.onclick=async ()=>{
-  const op=b.dataset.op, before=JSON.stringify(pet);
+// Extracted so the dance mini-game can drive the SAME verifiable path a button does, rather
+// than inventing a second way for a pet to change.
+async function runOp(op){
+  const before=JSON.stringify(pet);
   if(!opReady(op)){ toast(op+' on cooldown'); return; }    // don't spend a signature on a no-op
   if(xamanReady){                                          // REAL: sign a Payment+memo in Xaman; issuer applies the rules + NFTokenModify
     const r=await XamanBridge.interact(op,petNid);
@@ -351,7 +353,8 @@ document.querySelectorAll('[data-op]').forEach(b=>b.onclick=async ()=>{
   }
   pet=step(pet,OPNUM[op],nowLedger(),OWNER);               // LOCAL demo (no Xaman / standalone)
   if(JSON.stringify(pet)!==before){lastJoy=performance.now();toast(op+'! 💖');}
-});
+}
+document.querySelectorAll('[data-op]').forEach(b=>b.onclick=()=>runOp(b.dataset.op));
 
 // Server-built Xaman sign requests. The browser SDK's authorize() hangs on desktop and mobile alike,
 // so payloads are created by the backend instead and the user is handed a link plus a QR. Nothing is
@@ -603,7 +606,12 @@ async function keylessAdopt(addr){
 // → the app re-reads authoritative state via XamanBridge.fetchPet(nid). No-SDK/no-key → local demo.
 // Config (set before xaman_bridge.js loads): window.XAMAN_API_KEY / LEDGERLINGS_ISSUER / LEDGERLINGS_BACKEND.
 
-// ── DANCE mini-game (tap-to-beat; awards BOUNDED happiness on close) ──
+// ── DANCE mini-game (tap-to-beat) ──
+// The tap score is FLAVOUR, never an award. A skill score is invisible to the ledger, so paying
+// it out would mean the issuer trusting a number the client made up: unverifiable by construction,
+// and farmable by simply claiming a perfect run. Dancing well instead UNLOCKS the ordinary `play`
+// op, which is fixed, cooldown-gated and re-derivable like every other interaction. Skipping the
+// mini-game therefore gains a cheater nothing except a missed game.
 const DC=document.getElementById('dc'),DX=DC.getContext('2d');
 let dRun=false,dT0=0,dBpm=120,dBeat=500,dScore=0,dCombo=0,dBest=0,dHappy=0,dLastHit=-1e9,dParts=[];
 document.getElementById('danceBtn').onclick=()=>{openModal('dance');dRun=true;dT0=performance.now();dScore=dCombo=dHappy=0;};
@@ -678,7 +686,18 @@ document.getElementById('verify').onclick=async ()=>{
 
 // overlay open/close
 function openModal(id){document.getElementById(id).classList.add('on');}
-document.querySelectorAll('[data-close]').forEach(x=>x.onclick=()=>{document.getElementById(x.dataset.close).classList.remove('on');if(x.dataset.close==='dance')dRun=false;});
+document.querySelectorAll('[data-close]').forEach(x=>x.onclick=()=>{
+  document.getElementById(x.dataset.close).classList.remove('on');
+  if(x.dataset.close==='dance'){ dRun=false; danceFinish(); }
+});
+// A good run earns the pet a real, signed `play`. Anything less is just a game.
+const DANCE_MIN=4;                                  // combo-derived happiness needed to count
+function danceFinish(){
+  if(dHappy<DANCE_MIN){ toast('nice moves \u2014 keep the beat to cheer it up'); return; }
+  if(!opReady('play')){ toast('danced! but play is on cooldown'); return; }
+  toast('great dancing \u2014 cheering your pet \u2728');
+  runOp('play');
+}
 addEventListener('keydown',e=>{if(e.code==='Space'&&document.getElementById('dance').classList.contains('on')){e.preventDefault();dTap();}});
 
 // ── Music ────────────────────────────────────────────────────────────────────────────────────────
