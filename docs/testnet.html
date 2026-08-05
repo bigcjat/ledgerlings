@@ -62,6 +62,7 @@
   <div id="top"><div>🥚 <b id="name">Ledgerlings</b></div>
     <div style="display:flex;align-items:center;gap:8px">
       <div id="moodBadge" title="tap: verify the mood (its on-chain / off-chain source)">😌 <b id="moodPct" style="color:var(--hot)">·</b></div>
+      <div id="sndBtn" title="music on/off" style="cursor:pointer;font-size:14px;opacity:.85">🔈</div>
       <div id="meta">egg · day 0</div>
     </div></div>
   <div id="stage"><canvas id="c" width="200" height="220"></canvas></div>
@@ -265,7 +266,9 @@ function tick(){
   X.clearRect(0,0,200,220);
   const t=performance.now()/1000, bp=Math.abs(Math.sin(t*2.2));
   const mkt=(window.MarketMood?MarketMood.get():null);
-  drawPet(X,100,120,bp*5,(1-bp)*0.2,0.25+0.25*bp,mood(),mkt);
+  // shake wobble: a decaying horizontal jitter layered on the normal bounce. Visual only.
+  const sw = shakeActive() ? Math.sin(performance.now()/28)*7*((shakeUntil-performance.now())/600) : 0;
+  drawPet(X,100+sw,120,bp*5,(1-bp)*0.2,0.25+0.25*bp,mood(),mkt);
   updateMoodBadge(mkt);
   // hud
   document.getElementById('bH').style.width=pet.hunger+'%';
@@ -683,6 +686,77 @@ document.getElementById('verify').onclick=async ()=>{
 function openModal(id){document.getElementById(id).classList.add('on');}
 document.querySelectorAll('[data-close]').forEach(x=>x.onclick=()=>{document.getElementById(x.dataset.close).classList.remove('on');if(x.dataset.close==='dance')dRun=false;});
 addEventListener('keydown',e=>{if(e.code==='Space'&&document.getElementById('dance').classList.contains('on')){e.preventDefault();dTap();}});
+
+// ── Music ────────────────────────────────────────────────────────────────────────────────────────
+// Synthesised with WebAudio rather than shipped as a file: no asset in a public repo, no bytes on
+// GitHub Pages, and it cannot 404 the way market_mood.js silently did. COSMETIC ONLY — it never
+// reads or writes pet state.
+//
+// Browsers refuse to start audio outside a user gesture, so the context is created on the first
+// tap anywhere and the preference is remembered. Default is ON, muted state persists.
+const Music=(()=>{
+  let ctx=null,gain=null,timer=null,step=0,on=false;
+  // a calm pentatonic loop, so it does not grate after the tenth listen
+  const ROOT=220, SCALE=[0,3,5,7,10,12,10,7], BEAT=380;
+  const saved=()=>{ try{ return localStorage.getItem('ll_music'); }catch{ return null; } };
+  const remember=v=>{ try{ localStorage.setItem('ll_music',v); }catch{} };
+
+  function note(freq,when,dur,vol){
+    const o=ctx.createOscillator(), g=ctx.createGain();
+    o.type='triangle'; o.frequency.value=freq;
+    g.gain.setValueAtTime(0,when);
+    g.gain.linearRampToValueAtTime(vol,when+0.02);
+    g.gain.exponentialRampToValueAtTime(0.0001,when+dur);
+    o.connect(g); g.connect(gain); o.start(when); o.stop(when+dur+0.02);
+  }
+  function tick(){
+    if(!on||!ctx) return;
+    const t=ctx.currentTime+0.05;
+    note(ROOT*Math.pow(2,SCALE[step%SCALE.length]/12), t, 0.35, 0.16);
+    if(step%4===0) note(ROOT/2, t, 0.7, 0.10);          // soft bass on the downbeat
+    step++;
+  }
+  function start(){
+    if(ctx) return;
+    const AC=window.AudioContext||window.webkitAudioContext; if(!AC) return;
+    ctx=new AC(); gain=ctx.createGain(); gain.gain.value=0.5; gain.connect(ctx.destination);
+    timer=setInterval(tick,BEAT);
+  }
+  function paint(){ const b=document.getElementById('sndBtn'); if(b){ b.textContent=on?'🔊':'🔈'; b.style.opacity=on?'.95':'.5'; } }
+  return {
+    // called from the first user gesture; honours a previous mute
+    boot(){ if(saved()==='off'){ on=false; paint(); return; } on=true; start(); if(ctx&&ctx.state==='suspended') ctx.resume(); paint(); },
+    toggle(){ on=!on; remember(on?'on':'off'); if(on){ start(); if(ctx&&ctx.state==='suspended') ctx.resume(); } paint(); },
+    get on(){ return on; }
+  };
+})();
+document.getElementById('sndBtn').onclick=()=>Music.toggle();
+addEventListener('pointerdown',function boot(){ removeEventListener('pointerdown',boot); Music.boot(); },{once:true});
+
+// ── Shake to wobble (mobile gyroscope / accelerometer) ───────────────────────────────────────────
+// PURELY VISUAL. It does not touch pet state and never will from here: every stat has to derive
+// from ledger history, so anything that changed the pet client-side would make /verify DIVERGE.
+// (The dance mini-game is the same: its score is display-only.) If shaking should ever COUNT, it
+// has to become a real op in pet_rules and be signed as a Payment like feed and play.
+//
+// iOS 13+ gates DeviceMotionEvent behind a permission prompt that is only granted from a user
+// gesture, so it is requested on the first tap rather than at load, where it would be refused.
+let shakeK=0, shakeUntil=0;
+function shakeActive(){ return performance.now()<shakeUntil; }
+function onMotion(e){
+  const a=e.accelerationIncludingGravity; if(!a) return;
+  const m=Math.abs(a.x||0)+Math.abs(a.y||0)+Math.abs(a.z||0);
+  // high-pass: gravity alone is ~9.8, so only a real jolt clears this
+  if(m>26){ shakeUntil=performance.now()+600; if(++shakeK===1) toast('wheee 🌀'); }
+  else if(!shakeActive()) shakeK=0;
+}
+function enableShake(){
+  if(!('DeviceMotionEvent' in window)) return;
+  const need=typeof DeviceMotionEvent.requestPermission==='function';
+  if(need){ DeviceMotionEvent.requestPermission().then(r=>{ if(r==='granted') addEventListener('devicemotion',onMotion); }).catch(()=>{}); }
+  else addEventListener('devicemotion',onMotion);
+}
+addEventListener('pointerdown',function sh(){ removeEventListener('pointerdown',sh); enableShake(); },{once:true});
 
 // ── Market Mood: start polling the (off-chain fallback) XRP/USD price ──
 // Cosmetic overlay only. Degrades gracefully to 'calm'/stale if the fetch is blocked.
