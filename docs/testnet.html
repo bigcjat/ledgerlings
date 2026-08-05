@@ -561,9 +561,23 @@ function showShare(){ const sh=document.getElementById('share');
   if(petNid&&BK()){ sh.style.display='block'; sh.onclick=()=>window.open(BK()+'/p/'+petNid,'_blank'); } }
 function setMode(){
   const el=document.getElementById('mode');
-  if(petNid) el.innerHTML='🟢 <b>live on XRPL mainnet</b> · this pet is a real dNFT · '+
-    (BK()?`<a href="${BK()}/p/${petNid}" target="_blank" style="color:var(--hot)">view its public page</a>`:'');
-  else el.innerHTML='⚪️ <b>demo mode</b> · nothing here is on a ledger yet. Adopt above to mint a real one.';
+  if(petNid){
+    el.innerHTML='🟢 <b>live on XRPL mainnet</b> · this pet is a real dNFT · '+
+      (BK()?`<a href="${BK()}/p/${petNid}" target="_blank" style="color:var(--hot)">view its public page</a> · `:'')+
+      `<a href="#" id="signOutBtn" style="color:var(--grey);text-decoration:underline">switch account</a>`;
+    const sb=document.getElementById('signOutBtn');
+    if(sb){
+      sb.onclick=(e)=>{
+        e.preventDefault();
+        try{ localStorage.removeItem('ll_owner'); localStorage.removeItem('ll_pet_nid'); }catch{}
+        petNid=null; OWNER='rDemoOwner'; pet=genesis(0,OWNER);
+        document.getElementById('keyless').style.display='block';
+        document.getElementById('share').style.display='none';
+        document.getElementById('ladderBox').style.display='none';
+        setMode(); refreshOps(); toast('account cleared');
+      };
+    }
+  } else el.innerHTML='⚪️ <b>demo mode</b> · nothing here is on a ledger yet. Adopt above to mint a real one.';
 }
 
 // Poll the backend for authoritative state. The issuer's poller reconciles each pet to
@@ -573,21 +587,26 @@ async function pullLive(){ if(!petNid) return; const live=await XamanBridge.fetc
 // Keyless adopt. POST /adopt is public and takes any classic address, so a visitor with no wallet
 // software still gets a real, source-tagged, mainnet mint. This is the same endpoint that passed
 // the Make Waves mainnet gate on 2026-07-30.
-async function keylessAdopt(addr){
+async function keylessAdopt(addr, isAutoLoad){
   const msg=document.getElementById('kMsg'), go=document.getElementById('kGo');
   if(!/^r[1-9A-HJ-NP-Za-km-z]{24,34}$/.test(addr)){ msg.textContent='That does not look like an XRPL address (starts with r).'; return; }
-  go.disabled=true; msg.textContent='minting on mainnet…';
+  go.disabled=true; msg.textContent=isAutoLoad?'loading pet…':'minting on mainnet…';
   let a=null; try{ a=await (await fetch(BK()+'/adopt',{method:'POST',headers:{'content-type':'application/json'},
     body:JSON.stringify({owner:addr, name:(document.getElementById('kName')||{}).value||''})})).json(); }catch(e){ a={error:String(e.message||e)}; }
   go.disabled=false;
-  if(!a||a.error||!a.nid){ msg.textContent='could not adopt: '+((a&&a.error)||'unknown error'); return; }
+  if(!a||a.error||!a.nid){
+    msg.textContent='could not adopt: '+((a&&a.error)||'unknown error');
+    document.getElementById('keyless').style.display='block';
+    return;
+  }
   OWNER=addr; petNid=a.nid; if(a.state) pet=a.state;
+  try{ localStorage.setItem('ll_owner', addr); localStorage.setItem('ll_pet_nid', a.nid); }catch{}
   msg.innerHTML=a.existing?'You already had one. Loaded it.':'Minted. It is on mainnet now.';
   document.getElementById('keyless').style.display='none';
   await syncLedger(); setInterval(syncLedger,30000);
   setInterval(pullLive,15000);
   showShare(); setMode(); refreshOps(); loadLadder();
-  toast('adopted on mainnet 🎉');
+  toast(isAutoLoad?'welcome back 💖':'adopted on mainnet 🎉');
 }
 
 // boot: prefer the Xaman xApp path; fall back to keyless adopt; otherwise stay a labelled demo
@@ -595,25 +614,20 @@ async function keylessAdopt(addr){
   xamanReady=await XamanBridge.init();
   if(xamanReady){ OWNER=XamanBridge.account;
     const a=await XamanBridge.adopt();                     // mints (or returns) the user's pet dNFT
-    if(a&&a.nid){ petNid=a.nid; if(a.state) pet=a.state; }
+    if(a&&a.nid){
+      petNid=a.nid; if(a.state) pet=a.state;
+      try{ localStorage.setItem('ll_owner', OWNER); localStorage.setItem('ll_pet_nid', a.nid); }catch{}
+    }
     toast('connected: '+OWNER.slice(0,8)+'…');
     await syncLedger(); setInterval(syncLedger,30000);     // real ledger for cooldown gray-out
     showShare(); loadLadder();
   } else if(BK()){
-    document.getElementById('keyless').style.display='block';
+    let savedOwner=null;
+    try{ savedOwner=localStorage.getItem('ll_owner'); }catch{}
+
     document.getElementById('kGo').onclick=()=>keylessAdopt(document.getElementById('kAddr').value.trim());
     document.getElementById('kAddr').addEventListener('keydown',e=>{ if(e.key==='Enter') document.getElementById('kGo').click(); });
     // Xaman sign-in, via a SERVER-BUILT SignIn payload.
-    //
-    // The browser SDK's xumm.authorize() hangs on desktop and mobile alike, which is why this was
-    // disabled behind if(false) for weeks. It is not needed: a SignIn is just another payload, so
-    // the backend can create it exactly like an interact or a ladder challenge, and the user gets
-    // the same link-plus-QR they already use to sign everything else. Nothing is auto-opened, so
-    // there is no popup for a browser to block, and watchSign() resolves it over Xaman's own
-    // status socket and closes the dialog by itself.
-    //
-    // A SignIn moves no value and never reaches a ledger. All it does is save the player typing
-    // an address, so the keyless paste-an-address path stays available underneath.
     {
       const sb=document.getElementById('kSign'); sb.style.display='block';
       document.getElementById('kOr').style.display='block';
@@ -632,6 +646,13 @@ async function keylessAdopt(addr){
           await keylessAdopt(account);         // same public /adopt; the signed-in account owns it
         }, {ws:j.ws});
       };
+    }
+
+    if(savedOwner && /^r[1-9A-HJ-NP-Za-km-z]{24,34}$/.test(savedOwner.trim())){
+      document.getElementById('kAddr').value=savedOwner.trim();
+      await keylessAdopt(savedOwner.trim(), true);
+    } else {
+      document.getElementById('keyless').style.display='block';
     }
   }
   setMode();
