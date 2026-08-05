@@ -42,12 +42,22 @@ on the ledger.
 There is a **"simulate a cheating operator"** button next to it that flips one field of the record so
 you can watch the verifier catch the lie, without touching the ledger.
 
-Two independent implementations of the check exist, deliberately:
+Two independent implementations of the check exist, deliberately, and both verify a real pet:
 
 ```bash
 curl https://ledgerlings-backend-production.up.railway.app/verify/<nftoken_id>   # Node
-python3 build/replay_verify.py                                                   # Python
+python3 build/replay_verify.py <nftoken_id>                                      # Python
 ```
+
+The Python one talks to a public XRPL node and never to a Ledgerlings server, so it is the one that
+does not require trusting the operator. Point it wherever you like:
+
+```bash
+python3 build/replay_verify.py <nftoken_id> --node https://your-own-node:51234
+```
+
+It exits non-zero on DIVERGED, and with no arguments it self-tests the checker against synthetic
+histories instead of hitting the network. It needs `pip install xrpl-py`.
 
 ## The rules bite
 
