@@ -52,14 +52,19 @@ def evolve(care_score, care_max):
     return LEGENDARY
 
 
-def genesis(birth_ledger, owner):
-    return {"v": 1, "owner": owner, "birth": birth_ledger, "last_ix": birth_ledger,
+def genesis(birth_ledger, owner, name=None):
+    # `name` is OPTIONAL and omitted entirely when absent, mirroring pet_rules.js, so an unnamed
+    # pet encodes byte-identically to one minted before names existed.
+    g = {"v": 1, "owner": owner, "birth": birth_ledger, "last_ix": birth_ledger,
             "hunger": 80, "happiness": 80, "health": 100, "stage": EGG, "form": 0, "alive": 1,
             "age": 0, "care": 0, "care_max": 0, "death_cause": 0, "last_feed": 0, "last_play": 0,
             # RESERVED (v2 marketplace): cosmetic-only list of equipped accessory/background NFTokenIDs.
             # MUST stay COSMETIC — step() never reads it, so wearables can never affect stats/evolution
             # (pay-to-win would break the provably-fair brand). A separate v2 `equip` op manages it.
             "loadout": []}
+    if name:
+        g["name"] = name
+    return g
 
 
 def _award_care(s, was_low):

@@ -90,7 +90,7 @@ const unhex = h => Buffer.from(h, 'hex').toString('utf8');
 // order => deterministic string, so the verifier's enc(derived) === enc(current) still holds.
 const K = { v: 'v', owner: 'o', birth: 'b', last_ix: 'x', hunger: 'h', happiness: 'j', health: 'l',
   stage: 's', form: 'f', alive: 'a', age: 'g', care: 'c', care_max: 'm', death_cause: 'd',
-  last_feed: 'F', last_play: 'P' };
+  last_feed: 'F', last_play: 'P', name: 'n' };
 const KINV = Object.fromEntries(Object.entries(K).map(([f, s]) => [s, f]));
 const enc = state => {
   const o = {};
@@ -163,6 +163,18 @@ function requireAdmin(req, res, next) {
 app.post('/adopt', async (req, res) => {
   const owner = req.body.owner;
   if (!owner || !xrpl.isValidClassicAddress(owner)) return res.status(400).json({ error: 'valid owner address required' });
+  // Optional pet name, fixed at mint and never changed (step() copies it through untouched, so it
+  // re-derives for free and any later edit by us would DIVERGE). Budget: the NFT URI is capped at
+  // kMaxTokenUriLength = 256 bytes and an unnamed pet already uses ~152, so the check is on the
+  // ENCODED byte length, not the character count — a quote or an emoji costs more than one byte.
+  const rawName = typeof req.body.name === 'string' ? req.body.name.trim() : '';
+  const petName = rawName.slice(0, 24);
+  if (petName && Buffer.byteLength(JSON.stringify(petName), 'utf8') > 64) {
+    return res.status(400).json({ error: 'name too long once encoded; use fewer or simpler characters' });
+  }
+  if (petName && /[\u0000-\u001f\u007f]/.test(petName)) {
+    return res.status(400).json({ error: 'name contains control characters' });
+  }
   try {
     const out = await withClient(async (c, w) => {
       // one-living-pet-per-owner cap: return the caller's existing pet rather than minting a second
@@ -173,9 +185,9 @@ app.post('/adopt', async (req, res) => {
       }
       const now = (await c.request({ command: 'ledger', ledger_index: 'validated' })).result.ledger_index;
       const prepared = await c.autofill(tag({ TransactionType: 'NFTokenMint', Account: w.classicAddress,
-        NFTokenTaxon: TAXON, Flags: TF_MUTABLE_TRANSFERABLE, TransferFee: ROYALTY_BPS, URI: enc(R.genesis(now, owner)) }));
+        NFTokenTaxon: TAXON, Flags: TF_MUTABLE_TRANSFERABLE, TransferFee: ROYALTY_BPS, URI: enc(R.genesis(now, owner, petName)) }));
       const rr = (await c.submitAndWait(w.sign(prepared).tx_blob)).result;
-      return { result: rr.meta.TransactionResult, nid: rr.meta.nftoken_id, state: R.genesis(now, owner) };
+      return { result: rr.meta.TransactionResult, nid: rr.meta.nftoken_id, state: R.genesis(now, owner, petName) };
     });
     res.json(out);
   } catch (e) { res.status(500).json({ error: e.message }); }
@@ -1132,7 +1144,7 @@ function genCardSvg(s, nid) {
     <ellipse cx="0" cy="20" rx="14" ry="10" fill="#0b1e26"/>
     ${dead ? '<text x="0" y="-2" font-size="34" text-anchor="middle" fill="#0b1e26">✕</text>' : ''}
   </g>
-  <text x="315" y="70" font-family="system-ui,sans-serif" font-size="30" font-weight="700" fill="#6ff0ff">Ledgerling</text>
+  <text x="315" y="70" font-family="system-ui,sans-serif" font-size="30" font-weight="700" fill="#6ff0ff">${esc((s.name || 'Ledgerling').slice(0, 24))}</text>
   <text x="315" y="100" font-family="monospace" font-size="15" fill="#8fb3bd">${esc(shortNid(nid))}</text>
   <text x="315" y="146" font-family="system-ui,sans-serif" font-size="20" fill="#eaf6f9">${esc(stage)}${dead ? ' · passed' : ''}</text>
   <text x="315" y="174" font-family="system-ui,sans-serif" font-size="17" fill="${aura}">form: ${esc(form)}</text>

@@ -21,9 +21,15 @@
       : a < STAGE_AGE[4] ? ADULT : a < LIFESPAN ? ELDER : PASSED;
   }
   function evolve(c, m) { if (m <= 0) return 1; const r = Math.floor(c * 100 / m); return r < 40 ? 1 : r < 75 ? 2 : r < 92 ? 3 : 4; }
-  function genesis(birth, owner) {
-    return { v: 1, owner, birth, last_ix: birth, hunger: 80, happiness: 80, health: 100, stage: EGG,
+  // `name` is OPTIONAL and, when absent, is left off the object entirely rather than set to "".
+  // That keeps an unnamed pet's encoded URI byte-identical to one minted before names existed, so
+  // adding the field cannot make an existing pet DIVERGE. step() copies state, so a name set at
+  // genesis survives every interaction untouched without step() needing to know about it.
+  function genesis(birth, owner, name) {
+    const g = { v: 1, owner, birth, last_ix: birth, hunger: 80, happiness: 80, health: 100, stage: EGG,
       form: 0, alive: 1, age: 0, care: 0, care_max: 0, death_cause: 0, last_feed: 0, last_play: 0, loadout: [] };
+    if (name) g.name = name;
+    return g;
   }
   function step(state, op, now, sender) {
     const s = Object.assign({}, state);

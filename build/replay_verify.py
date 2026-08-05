@@ -69,7 +69,8 @@ def verify_pet(client, issuer_addr, nid):
     # compact on-ledger codec — MIRRORS server.js: short keys + loadout omitted. (Keep in sync.)
     _KINV = {"v": "v", "o": "owner", "b": "birth", "x": "last_ix", "h": "hunger", "j": "happiness",
              "l": "health", "s": "stage", "f": "form", "a": "alive", "g": "age", "c": "care",
-             "m": "care_max", "d": "death_cause", "F": "last_feed", "P": "last_play"}
+             "m": "care_max", "d": "death_cause", "F": "last_feed", "P": "last_play",
+             "n": "name"}
     def decode_uri(uri_hex):
         o = json.loads(hex_to_str(uri_hex))
         s = {"loadout": []}                       # loadout not stored on-ledger; restore default

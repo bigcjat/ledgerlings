@@ -89,6 +89,8 @@
     <div style="opacity:.75;font-size:12px;margin-bottom:8px">Paste any XRPL address. We mint your Ledgerling on XRPL mainnet, recorded to your address, and anyone can verify its whole life from the ledger. The NFT is held by the game issuer for now, because the issuer is what updates it as your pet lives. No wallet connection and nothing to install. Once you have one, feeding it and fighting on the ladder are real transactions you approve in Xaman.</div>
     <input id="kAddr" placeholder="r..." autocomplete="off" spellcheck="false"
       style="width:100%;box-sizing:border-box;padding:8px;border-radius:8px;border:1px solid var(--glow);background:#062430;color:#cfefff;font:inherit;font-size:13px">
+    <input id="kName" placeholder="name it (optional)" autocomplete="off" maxlength="24"
+      style="width:100%;box-sizing:border-box;margin-top:6px;padding:8px;border-radius:8px;border:1px solid var(--glow);background:#062430;color:#cfefff;font:inherit;font-size:13px">
     <button id="kGo" style="margin-top:8px;width:100%;padding:9px;border-radius:8px;border:1px solid var(--glow);background:#0b5;color:#022;font:inherit;font-weight:bold;cursor:pointer">Adopt on mainnet</button>
     <div id="kMsg" style="margin-top:7px;font-size:12px;opacity:.85"></div>
   </div>
@@ -547,7 +549,7 @@ async function keylessAdopt(addr){
   if(!/^r[1-9A-HJ-NP-Za-km-z]{24,34}$/.test(addr)){ msg.textContent='That does not look like an XRPL address (starts with r).'; return; }
   go.disabled=true; msg.textContent='minting on mainnet…';
   let a=null; try{ a=await (await fetch(BK()+'/adopt',{method:'POST',headers:{'content-type':'application/json'},
-    body:JSON.stringify({owner:addr})})).json(); }catch(e){ a={error:String(e.message||e)}; }
+    body:JSON.stringify({owner:addr, name:(document.getElementById('kName')||{}).value||''})})).json(); }catch(e){ a={error:String(e.message||e)}; }
   go.disabled=false;
   if(!a||a.error||!a.nid){ msg.textContent='could not adopt: '+((a&&a.error)||'unknown error'); return; }
   OWNER=addr; petNid=a.nid; if(a.state) pet=a.state;
